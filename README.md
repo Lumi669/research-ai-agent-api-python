@@ -39,6 +39,20 @@ uvicorn app.main:app --reload --port 8000
 - `AWS_REGION` controls the DynamoDB region, and `DYNAMODB_ENDPOINT_URL` is optional for local DynamoDB testing.
 - Set `S3_BUCKET_NAME` to enable presigned uploads for image/file attachments.
 - `S3_UPLOAD_PREFIX` controls the object key prefix, and `S3_PRESIGN_TTL_SECONDS` controls upload URL expiry.
+- Browser uploads to S3 need bucket CORS that allows your frontend origin to send `PUT` requests with `Content-Type`.
+  Example S3 CORS configuration:
+  ```json
+  [
+    {
+      "AllowedHeaders": ["Content-Type", "*"],
+      "AllowedMethods": ["PUT", "GET", "HEAD"],
+      "AllowedOrigins": ["http://localhost:8000", "http://localhost:3000"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+  ```
+  Replace the example origins with the exact frontend URLs that will call the presigned upload URL.
 - `MOCK_OPENAI=true` enables deterministic local responses.
 - `/v1/agent/chat` now uses a LangChain tool-calling agent when mock mode is disabled.
 - `/v1/conversations/*` stores separate multi-round conversations so each tab can keep its own history and resume later.
