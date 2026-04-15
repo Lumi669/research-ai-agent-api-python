@@ -22,7 +22,7 @@ async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
     if any(token in last_user.lower() for token in ["usage", "cost", "spend", "token"]):
         summary = get_usage_summary()
         return AgentChatData(reply=f"Mock agent summary: {summary.total_events} tracked events, {summary.total_tokens} total tokens, estimated cost ${summary.total_estimated_cost_usd:.6f}.", provider="mock", toolsUsed=["get_usage_summary"])
-    return AgentChatData(reply="Mock agent mode is enabled. I can summarize papers, analyze conference pages, compare PDF articles, and report usage once live model access is available.", provider="mock", toolsUsed=[])
+    return AgentChatData(reply="Hello, Mock agent mode is enabled. I can summarize papers, analyze conference pages, compare PDF articles, and report usage once live model access is available.", provider="mock", toolsUsed=[])
 
 
 async def chat_with_agent(body: AgentChatBody) -> AgentChatData:
