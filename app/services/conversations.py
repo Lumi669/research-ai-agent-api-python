@@ -8,7 +8,7 @@ from uuid import uuid4
 from boto3.dynamodb.conditions import Attr, Key
 
 from app.core.errors import AppError
-from app.models.agent import AgentChatBody, AgentMessage
+from app.models.agent import AgentChatBody, AgentMessage, TextPart
 from app.models.conversations import ConversationDetail, ConversationSummary, CreateConversationBody, PostConversationMessageData
 from app.services.agent import chat_with_agent
 from app.services.dynamodb import get_dynamodb_table
@@ -55,6 +55,15 @@ def _summary_from_item(item: dict[str, object]) -> ConversationSummary:
     )
 
 
+def _message_from_item(item: dict[str, object]) -> AgentMessage:
+    payload = {
+        "role": str(item["role"]),
+        "content": item.get("content"),
+        "parts": item.get("parts"),
+    }
+    return AgentMessage.model_validate(payload)
+
+
 def _detail_from_items(meta_item: dict[str, object], message_items: list[dict[str, object]]) -> ConversationDetail:
     sorted_messages = sorted(message_items, key=lambda item: _deserialize_int(item.get("position")))
     return ConversationDetail(
@@ -64,10 +73,7 @@ def _detail_from_items(meta_item: dict[str, object], message_items: list[dict[st
         createdAt=str(meta_item["created_at"]),
         updatedAt=str(meta_item["updated_at"]),
         messageCount=_deserialize_int(meta_item.get("message_count")),
-        messages=[
-            AgentMessage(role=str(item["role"]), content=str(item["content"]))
-            for item in sorted_messages
-        ],
+        messages=[_message_from_item(item) for item in sorted_messages],
     )
 
 
@@ -125,9 +131,18 @@ async def get_conversation(conversation_id: str) -> ConversationDetail:
     return _detail_from_items(meta_item, message_items)
 
 
-async def post_conversation_message(conversation_id: str, content: str) -> PostConversationMessageData:
+async def post_conversation_message(
+    conversation_id: str,
+    content: str | None = None,
+    parts: list[dict[str, object]] | list[object] | None = None,
+) -> PostConversationMessageData:
     conversation = await get_conversation(conversation_id)
-    user_content = content.strip()
+    user_message_model = AgentMessage(
+        role="user",
+        content=content.strip() if content else None,
+        parts=parts,  # type: ignore[arg-type]
+    )
+    user_content = user_message_model.text_content
     if not user_content:
         raise AppError(400, "Message content is required.")
 
@@ -139,7 +154,8 @@ async def post_conversation_message(conversation_id: str, content: str) -> PostC
         "conversation_id": conversation_id,
         "position": next_position,
         "role": "user",
-        "content": user_content,
+        "content": user_message_model.content,
+        "parts": user_message_model.model_dump(mode="json").get("parts"),
         "created_at": _now_iso(),
     }
     await asyncio.to_thread(get_dynamodb_table().put_item, Item=user_message)
@@ -147,10 +163,11 @@ async def post_conversation_message(conversation_id: str, content: str) -> PostC
     agent_messages: list[dict[str, str]] = []
     if conversation.system_prompt:
         agent_messages.append({"role": "system", "content": conversation.system_prompt})
-    agent_messages.extend({"role": message.role, "content": message.content} for message in conversation.messages)
+    agent_messages.extend({"role": message.role, "content": message.text_content} for message in conversation.messages)
     agent_messages.append({"role": "user", "content": user_content})
 
     assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
+    assistant_message_model = AgentMessage(role="assistant", parts=[TextPart(type="text", text=assistant.reply)])
     assistant_message = {
         "pk": _conversation_pk(conversation_id),
         "sk": _message_sk(next_position + 1),
@@ -158,7 +175,8 @@ async def post_conversation_message(conversation_id: str, content: str) -> PostC
         "conversation_id": conversation_id,
         "position": next_position + 1,
         "role": "assistant",
-        "content": assistant.reply,
+        "content": assistant_message_model.content,
+        "parts": assistant_message_model.model_dump(mode="json").get("parts"),
         "created_at": _now_iso(),
     }
     await asyncio.to_thread(get_dynamodb_table().put_item, Item=assistant_message)

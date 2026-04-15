@@ -126,7 +126,7 @@ def _build_llm() -> ChatOpenAI:
 
 
 def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], str]:
-    system_messages = [message.content.strip() for message in body.messages if message.role == "system" and message.content.strip()]
+    system_messages = [message.text_content.strip() for message in body.messages if message.role == "system" and message.text_content.strip()]
     conversation: list[BaseMessage] = []
     last_user_message: str | None = None
 
@@ -134,10 +134,10 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
         if message.role == "system":
             continue
         if message.role == "user":
-            conversation.append(HumanMessage(content=message.content))
-            last_user_message = message.content
+            conversation.append(HumanMessage(content=message.text_content))
+            last_user_message = message.text_content
         elif message.role == "assistant":
-            conversation.append(AIMessage(content=message.content))
+            conversation.append(AIMessage(content=message.text_content))
 
     if last_user_message is None:
         raise AppError(400, "At least one user message is required.")

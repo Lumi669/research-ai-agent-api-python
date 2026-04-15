@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from app.models.agent import AgentChatData, AgentMessage
+from app.models.agent import AgentChatData, AgentMessage, MessagePart
 
 
 class CreateConversationBody(BaseModel):
@@ -26,7 +26,8 @@ class ConversationDetail(ConversationSummary):
 
 
 class PostConversationMessageBody(BaseModel):
-    content: str = Field(min_length=1, max_length=20_000)
+    content: str | None = Field(default=None, min_length=1, max_length=20_000)
+    parts: list[MessagePart] | None = Field(default=None, max_length=50)
 
 
 class PostConversationMessageData(BaseModel):

@@ -27,4 +27,4 @@ async def post_message_to_conversation(
     conversation_id: str,
     body: PostConversationMessageBody,
 ) -> dict:
-    return {"success": True, "data": await post_conversation_message(conversation_id, body.content)}
+    return {"success": True, "data": await post_conversation_message(conversation_id, body.content, body.parts)}
