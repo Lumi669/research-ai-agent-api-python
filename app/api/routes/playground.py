@@ -225,6 +225,50 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       color: var(--text);
     }
 
+    .message-body {
+      display: grid;
+      gap: 14px;
+      color: var(--text);
+    }
+
+    .message-body p {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+    }
+
+    .message-table-wrap {
+      overflow-x: auto;
+      border-radius: 14px;
+      border: 1px solid rgba(35, 31, 26, 0.12);
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .message-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 520px;
+    }
+
+    .message-table th,
+    .message-table td {
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(35, 31, 26, 0.1);
+      line-height: 1.45;
+    }
+
+    .message-table th {
+      background: rgba(35, 31, 26, 0.06);
+      font-size: 0.92rem;
+    }
+
+    .message-table tr:last-child td {
+      border-bottom: 0;
+    }
+
     .status-item.success { border-left: 4px solid var(--success); }
     .status-item.error { border-left: 4px solid var(--danger); }
     .status-item.info { border-left: 4px solid var(--accent); }
@@ -457,9 +501,68 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
           if (part.type === "table") return `[table] ${part.table.columns.join(", ")}`;
           return JSON.stringify(part);
         }).join("\\n\\n");
-        item.innerHTML = `<strong>${message.role}</strong><pre>${message.content || partSummary || "(empty)"}</pre>`;
+        const renderedContent = renderMessageContent(message.content || partSummary || "(empty)");
+        item.innerHTML = `<strong>${message.role}</strong>${renderedContent}`;
         messages.appendChild(item);
       });
+    }
+
+    function escapeHtml(value) {
+      return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function splitMarkdownRow(row) {
+      return row
+        .trim()
+        .replace(/^\\|/, "")
+        .replace(/\\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim());
+    }
+
+    function isMarkdownSeparatorRow(row) {
+      const cells = splitMarkdownRow(row);
+      return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function isMarkdownTableBlock(block) {
+      const rows = block.split(/\\n/).map((row) => row.trim()).filter(Boolean);
+      return rows.length >= 2 && rows[0].includes("|") && isMarkdownSeparatorRow(rows[1]);
+    }
+
+    function renderMarkdownTable(block) {
+      const rows = block.split(/\\n/).map((row) => row.trim()).filter(Boolean);
+      const headers = splitMarkdownRow(rows[0]);
+      const bodyRows = rows.slice(2).map(splitMarkdownRow).filter((cells) => cells.length);
+      const headerHtml = headers.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("");
+      const bodyHtml = bodyRows.map((cells) => {
+        const normalized = headers.map((_, index) => `<td>${escapeHtml(cells[index] || "")}</td>`).join("");
+        return `<tr>${normalized}</tr>`;
+      }).join("");
+      return `
+        <div class="message-table-wrap">
+          <table class="message-table">
+            <thead><tr>${headerHtml}</tr></thead>
+            <tbody>${bodyHtml}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderMessageContent(content) {
+      const blocks = content.split(/\\n\\s*\\n/).filter((block) => block.trim());
+      const rendered = blocks.map((block) => {
+        if (isMarkdownTableBlock(block)) {
+          return renderMarkdownTable(block);
+        }
+        return `<p>${escapeHtml(block)}</p>`;
+      }).join("");
+      return `<div class="message-body">${rendered || "<p>(empty)</p>"}</div>`;
     }
 
     async function request(path, options = {}) {
