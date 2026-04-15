@@ -108,7 +108,7 @@ async def analyze_conference(input_data: AnalyzeConferenceBody) -> AnalyzeConfer
         completion = client.chat.completions.create(
             model=settings.openai_model,
             temperature=0.2,
-            max_tokens=1200 if input_data.mode == "short" else 2200,
+            max_completion_tokens=1200 if input_data.mode == "short" else 2200,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _conference_system_prompt()},

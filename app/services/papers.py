@@ -76,7 +76,7 @@ async def summarize_paper(body: SummarizePaperBody) -> SummarizePaperData:
         completion = client.chat.completions.create(
             model=settings.openai_model,
             temperature=0.2,
-            max_tokens=1000 if body.mode == "short" else 2200,
+            max_completion_tokens=1000 if body.mode == "short" else 2200,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _summarize_system_prompt(max_chars)},
@@ -106,7 +106,7 @@ async def extract_paper(body: ExtractPaperBody) -> ExtractPaperData:
         completion = client.chat.completions.create(
             model=settings.openai_model,
             temperature=0.1,
-            max_tokens=1800,
+            max_completion_tokens=1800,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _extract_system_prompt()},
@@ -138,7 +138,7 @@ async def compare_pdf_articles(body: ComparePdfArticlesBody) -> ComparePdfArticl
         completion = client.chat.completions.create(
             model=settings.openai_model,
             temperature=0.2,
-            max_tokens=900 if body.mode == "short" else 1800,
+            max_completion_tokens=900 if body.mode == "short" else 1800,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _compare_system_prompt()},
