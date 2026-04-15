@@ -12,6 +12,7 @@ from app.models.agent import AgentChatBody, AgentMessage, TextPart
 from app.models.conversations import ConversationDetail, ConversationSummary, CreateConversationBody, PostConversationMessageData
 from app.services.agent import chat_with_agent
 from app.services.dynamodb import get_dynamodb_table
+from app.services.s3 import validate_s3_message_parts
 
 CONVERSATION_META_SK = "META"
 MESSAGE_SK_PREFIX = "MSG#"
@@ -142,6 +143,7 @@ async def post_conversation_message(
         content=content.strip() if content else None,
         parts=parts,  # type: ignore[arg-type]
     )
+    await validate_s3_message_parts(user_message_model.parts, conversation_id)
     user_content = user_message_model.text_content
     if not user_content:
         raise AppError(400, "Message content is required.")

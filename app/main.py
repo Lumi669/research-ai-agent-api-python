@@ -6,6 +6,7 @@ from app.api.routes.conferences import router as conferences_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.papers import router as papers_router
+from app.api.routes.uploads import router as uploads_router
 from app.api.routes.usage import router as usage_router
 from app.core.errors import AppError
 
@@ -27,4 +28,5 @@ app.include_router(agent_router)
 app.include_router(conversations_router)
 app.include_router(papers_router)
 app.include_router(conferences_router)
+app.include_router(uploads_router)
 app.include_router(usage_router)
