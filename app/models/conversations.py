@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.models.agent import AgentChatData, AgentMessage, MessagePart
@@ -33,3 +35,19 @@ class PostConversationMessageBody(BaseModel):
 class PostConversationMessageData(BaseModel):
     conversation: ConversationDetail
     assistant: AgentChatData
+
+
+ConversationMessageJobStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
+
+
+class ConversationMessageJob(BaseModel):
+    job_id: str = Field(alias="jobId")
+    conversation_id: str = Field(alias="conversationId")
+    status: ConversationMessageJobStatus
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+    request: PostConversationMessageBody
+    result: PostConversationMessageData | None = None
+    error: str | None = None
+
+    model_config = {"populate_by_name": True}

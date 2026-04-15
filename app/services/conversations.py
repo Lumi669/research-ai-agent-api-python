@@ -9,13 +9,22 @@ from boto3.dynamodb.conditions import Attr, Key
 
 from app.core.errors import AppError
 from app.models.agent import AgentChatBody, AgentMessage, TextPart
-from app.models.conversations import ConversationDetail, ConversationSummary, CreateConversationBody, PostConversationMessageData
+from app.models.conversations import (
+    ConversationDetail,
+    ConversationMessageJob,
+    CreateConversationBody,
+    ConversationSummary,
+    PostConversationMessageBody,
+    PostConversationMessageData,
+)
 from app.services.agent import chat_with_agent
 from app.services.dynamodb import get_dynamodb_table
 from app.services.s3 import validate_s3_message_parts
 
 CONVERSATION_META_SK = "META"
 MESSAGE_SK_PREFIX = "MSG#"
+_conversation_message_jobs: dict[str, ConversationMessageJob] = {}
+_conversation_job_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 def _now_iso() -> str:
@@ -132,28 +141,46 @@ async def get_conversation(conversation_id: str) -> ConversationDetail:
     return _detail_from_items(meta_item, message_items)
 
 
-async def post_conversation_message(
+async def _update_conversation_meta(
     conversation_id: str,
-    content: str | None = None,
-    parts: list[dict[str, object]] | list[object] | None = None,
-) -> PostConversationMessageData:
-    conversation = await get_conversation(conversation_id)
+    *,
+    title: str | None,
+    message_count: int,
+) -> None:
+    await asyncio.to_thread(
+        get_dynamodb_table().update_item,
+        Key={"pk": _conversation_pk(conversation_id), "sk": CONVERSATION_META_SK},
+        UpdateExpression="SET title = :title, updated_at = :updated_at, message_count = :message_count",
+        ExpressionAttributeValues={
+            ":title": title,
+            ":updated_at": _now_iso(),
+            ":message_count": message_count,
+        },
+    )
+
+
+async def _store_user_message(
+    conversation: ConversationDetail,
+    *,
+    content: str | None,
+    parts: list[dict[str, object]] | list[object] | None,
+) -> tuple[AgentMessage, int]:
     user_message_model = AgentMessage(
         role="user",
         content=content.strip() if content else None,
         parts=parts,  # type: ignore[arg-type]
     )
-    await validate_s3_message_parts(user_message_model.parts, conversation_id)
+    await validate_s3_message_parts(user_message_model.parts, conversation.id)
     user_content = user_message_model.text_content
     if not user_content:
         raise AppError(400, "Message content is required.")
 
     next_position = len(conversation.messages)
     user_message = {
-        "pk": _conversation_pk(conversation_id),
+        "pk": _conversation_pk(conversation.id),
         "sk": _message_sk(next_position),
         "entity_type": "message",
-        "conversation_id": conversation_id,
+        "conversation_id": conversation.id,
         "position": next_position,
         "role": "user",
         "content": user_message_model.content,
@@ -162,38 +189,129 @@ async def post_conversation_message(
     }
     await asyncio.to_thread(get_dynamodb_table().put_item, Item=user_message)
 
+    updated_title = conversation.title or user_content[:80]
+    await _update_conversation_meta(conversation.id, title=updated_title, message_count=len(conversation.messages) + 1)
+    return user_message_model, next_position
+
+
+async def _build_agent_messages(conversation_id: str) -> tuple[ConversationDetail, list[dict[str, str]]]:
+    conversation = await get_conversation(conversation_id)
     agent_messages: list[dict[str, str]] = []
     if conversation.system_prompt:
         agent_messages.append({"role": "system", "content": conversation.system_prompt})
     agent_messages.extend({"role": message.role, "content": message.text_content} for message in conversation.messages)
-    agent_messages.append({"role": "user", "content": user_content})
+    return conversation, agent_messages
 
-    assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
-    assistant_message_model = AgentMessage(role="assistant", parts=[TextPart(type="text", text=assistant.reply)])
+
+async def _store_assistant_message(conversation: ConversationDetail, assistant_reply: str) -> None:
+    next_position = len(conversation.messages)
+    assistant_message_model = AgentMessage(role="assistant", parts=[TextPart(type="text", text=assistant_reply)])
     assistant_message = {
-        "pk": _conversation_pk(conversation_id),
-        "sk": _message_sk(next_position + 1),
+        "pk": _conversation_pk(conversation.id),
+        "sk": _message_sk(next_position),
         "entity_type": "message",
-        "conversation_id": conversation_id,
-        "position": next_position + 1,
+        "conversation_id": conversation.id,
+        "position": next_position,
         "role": "assistant",
         "content": assistant_message_model.content,
         "parts": assistant_message_model.model_dump(mode="json").get("parts"),
         "created_at": _now_iso(),
     }
     await asyncio.to_thread(get_dynamodb_table().put_item, Item=assistant_message)
+    await _update_conversation_meta(conversation.id, title=conversation.title, message_count=len(conversation.messages) + 1)
 
-    updated_title = conversation.title or user_content[:80]
-    updated_at = _now_iso()
-    await asyncio.to_thread(
-        get_dynamodb_table().update_item,
-        Key={"pk": _conversation_pk(conversation_id), "sk": CONVERSATION_META_SK},
-        UpdateExpression="SET title = :title, updated_at = :updated_at, message_count = :message_count",
-        ExpressionAttributeValues={
-            ":title": updated_title,
-            ":updated_at": updated_at,
-            ":message_count": len(conversation.messages) + 2,
-        },
-    )
 
+async def _complete_conversation_message(
+    conversation_id: str,
+    *,
+    content: str | None,
+    parts: list[dict[str, object]] | list[object] | None,
+) -> PostConversationMessageData:
+    initial_conversation = await get_conversation(conversation_id)
+    await _store_user_message(initial_conversation, content=content, parts=parts)
+    updated_conversation, agent_messages = await _build_agent_messages(conversation_id)
+    assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
+    latest_conversation = await get_conversation(conversation_id)
+    await _store_assistant_message(latest_conversation, assistant.reply)
     return PostConversationMessageData(conversation=await get_conversation(conversation_id), assistant=assistant)
+
+
+async def post_conversation_message(
+    conversation_id: str,
+    content: str | None = None,
+    parts: list[dict[str, object]] | list[object] | None = None,
+) -> PostConversationMessageData:
+    return await _complete_conversation_message(conversation_id, content=content, parts=parts)
+
+
+def _find_active_message_job(conversation_id: str) -> ConversationMessageJob | None:
+    for job in _conversation_message_jobs.values():
+        if job.conversation_id == conversation_id and job.status in {"queued", "running"}:
+            return job
+    return None
+
+
+async def _run_conversation_message_job(job_id: str, conversation_id: str, body: PostConversationMessageBody) -> None:
+    job = _conversation_message_jobs.get(job_id)
+    if job is None:
+        return
+
+    job.status = "running"
+    job.updated_at = _now_iso()
+    try:
+        job.result = await _complete_conversation_message(conversation_id, content=body.content, parts=body.parts)
+        job.status = "succeeded"
+        job.updated_at = _now_iso()
+    except asyncio.CancelledError:
+        job.status = "canceled"
+        job.updated_at = _now_iso()
+        raise
+    except AppError as exc:
+        job.status = "failed"
+        job.updated_at = _now_iso()
+        job.error = exc.message
+    except Exception as exc:
+        job.status = "failed"
+        job.updated_at = _now_iso()
+        job.error = str(exc)
+    finally:
+        _conversation_job_tasks.pop(job_id, None)
+
+
+def create_conversation_message_job(conversation_id: str, body: PostConversationMessageBody) -> ConversationMessageJob:
+    active_job = _find_active_message_job(conversation_id)
+    if active_job is not None:
+        raise AppError(409, f"A message job is already in progress for this conversation: {active_job.job_id}")
+
+    timestamp = _now_iso()
+    job = ConversationMessageJob(
+        jobId=str(uuid4()),
+        conversationId=conversation_id,
+        status="queued",
+        createdAt=timestamp,
+        updatedAt=timestamp,
+        request=body,
+    )
+    _conversation_message_jobs[job.job_id] = job
+    _conversation_job_tasks[job.job_id] = asyncio.create_task(_run_conversation_message_job(job.job_id, conversation_id, body))
+    return job
+
+
+def get_conversation_message_job(conversation_id: str, job_id: str) -> ConversationMessageJob:
+    job = _conversation_message_jobs.get(job_id)
+    if job is None or job.conversation_id != conversation_id:
+        raise AppError(404, f"Conversation message job not found: {job_id}")
+    return job
+
+
+def cancel_conversation_message_job(conversation_id: str, job_id: str) -> ConversationMessageJob:
+    job = get_conversation_message_job(conversation_id, job_id)
+    if job.status in {"succeeded", "failed", "canceled"}:
+        return job
+
+    task = _conversation_job_tasks.get(job_id)
+    if task is not None:
+        task.cancel()
+    job.status = "canceled"
+    job.updated_at = _now_iso()
+    return job

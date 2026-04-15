@@ -305,6 +305,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
 
         <div class="row" style="margin-top:16px;">
           <button class="primary" id="sendMessage">Upload And Send</button>
+          <button class="secondary" id="cancelRequest" disabled>Stop</button>
           <button class="secondary" id="clearComposer">Clear</button>
         </div>
       </div>
@@ -331,6 +332,9 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
     const state = {
       conversationId: null,
       selectedFiles: [],
+      isProcessing: false,
+      abortController: null,
+      activeJobId: null,
     };
 
     const baseUrlInput = document.getElementById("baseUrl");
@@ -343,6 +347,11 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
     const selectedFiles = document.getElementById("selectedFiles");
     const statusLog = document.getElementById("statusLog");
     const messages = document.getElementById("messages");
+    const createConversationButton = document.getElementById("createConversation");
+    const refreshConversationButton = document.getElementById("refreshConversation");
+    const sendMessageButton = document.getElementById("sendMessage");
+    const cancelRequestButton = document.getElementById("cancelRequest");
+    const clearComposerButton = document.getElementById("clearComposer");
 
     baseUrlInput.value = window.location.origin;
 
@@ -369,6 +378,31 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       item.className = `status-item ${kind}`;
       item.innerHTML = `<strong>${message}</strong><small>${new Date().toLocaleTimeString()}</small>`;
       statusLog.prepend(item);
+    }
+
+    function updateComposerControls() {
+      const canEditComposer = !state.isProcessing;
+      messageTextInput.disabled = !canEditComposer;
+      attachmentsInput.disabled = !canEditComposer;
+      clearComposerButton.disabled = !canEditComposer;
+      sendMessageButton.disabled = state.isProcessing;
+      cancelRequestButton.disabled = !state.isProcessing;
+      createConversationButton.disabled = state.isProcessing;
+      refreshConversationButton.disabled = state.isProcessing;
+    }
+
+    function beginProcessing() {
+      state.isProcessing = true;
+      state.abortController = new AbortController();
+      updateComposerControls();
+      return state.abortController.signal;
+    }
+
+    function endProcessing() {
+      state.isProcessing = false;
+      state.abortController = null;
+      state.activeJobId = null;
+      updateComposerControls();
     }
 
     function updateConversationState() {
@@ -464,12 +498,13 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       logStatus("info", "Conversation reloaded.");
     }
 
-    async function presignAndUpload(entry) {
+    async function presignAndUpload(entry, signal) {
       const file = entry.file;
       const kind = file.type.startsWith("image/") ? "image" : "file";
       const presign = await request("/v1/uploads/presign", {
         method: "POST",
         headers: apiHeaders(true),
+        signal,
         body: JSON.stringify({
           conversationId: state.conversationId,
           fileName: file.name,
@@ -482,6 +517,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       const uploadResponse = await fetch(presign.data.uploadUrl, {
         method: presign.data.method,
         headers: presign.data.headers,
+        signal,
         body: file,
       });
       if (!uploadResponse.ok) {
@@ -496,6 +532,9 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
     }
 
     async function sendMessage() {
+      if (state.isProcessing) {
+        throw new Error("A request is already in progress. Stop it or wait for it to finish before sending another query.");
+      }
       if (!state.conversationId) {
         throw new Error("Create a conversation first.");
       }
@@ -505,33 +544,79 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
         throw new Error("Add message text or at least one attachment.");
       }
 
-      logStatus("info", "Preparing attachments...");
-      const parts = [];
-      for (const entry of state.selectedFiles) {
-        parts.push(await presignAndUpload(entry));
-        logStatus("info", `Uploaded ${entry.file.name}.`);
+      const signal = beginProcessing();
+      try {
+        logStatus("info", "Preparing attachments...");
+        const parts = [];
+        for (const entry of state.selectedFiles) {
+          parts.push(await presignAndUpload(entry, signal));
+          logStatus("info", `Uploaded ${entry.file.name}.`);
+        }
+
+        if (text) {
+          parts.unshift({ type: "text", text });
+        }
+
+        const payloadContent = state.selectedFiles.length ? null : (text || null);
+        const jobResponse = await request(`/v1/conversations/${state.conversationId}/messages/jobs`, {
+          method: "POST",
+          headers: apiHeaders(true),
+          signal,
+          body: JSON.stringify({
+            content: payloadContent,
+            parts: parts.length ? parts : null,
+          }),
+        });
+        state.activeJobId = jobResponse.data.jobId;
+        logStatus("info", `Assistant job started: ${state.activeJobId}`);
+        logStatus("info", "Waiting for the assistant response...");
+
+        let result = null;
+        while (true) {
+          await new Promise((resolve, reject) => {
+            const timeoutId = window.setTimeout(resolve, 1200);
+            signal.addEventListener("abort", () => {
+              window.clearTimeout(timeoutId);
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            }, { once: true });
+          });
+
+          const jobStatus = await request(
+            `/v1/conversations/${state.conversationId}/messages/jobs/${state.activeJobId}`,
+            {
+              headers: apiHeaders(false),
+              signal,
+            },
+          );
+          const status = jobStatus.data.status;
+          if (status === "queued" || status === "running") {
+            continue;
+          }
+          if (status === "succeeded") {
+            result = jobStatus.data.result;
+            break;
+          }
+          if (status === "canceled") {
+            throw new DOMException("The operation was aborted.", "AbortError");
+          }
+          throw new Error(jobStatus.data.error || `Message job ended with status: ${status}`);
+        }
+
+        renderMessages(result.conversation);
+        messageTextInput.value = "";
+        attachmentsInput.value = "";
+        state.selectedFiles = [];
+        renderSelectedFiles();
+        logStatus("success", "Message sent.");
+      } catch (error) {
+        if (error.name === "AbortError") {
+          logStatus("info", "Request canceled.");
+          return;
+        }
+        throw error;
+      } finally {
+        endProcessing();
       }
-
-      if (text) {
-        parts.unshift({ type: "text", text });
-      }
-
-      const payloadContent = state.selectedFiles.length ? null : (text || null);
-      const result = await request(`/v1/conversations/${state.conversationId}/messages`, {
-        method: "POST",
-        headers: apiHeaders(true),
-        body: JSON.stringify({
-          content: payloadContent,
-          parts: parts.length ? parts : null,
-        }),
-      });
-
-      renderMessages(result.data.conversation);
-      messageTextInput.value = "";
-      attachmentsInput.value = "";
-      state.selectedFiles = [];
-      renderSelectedFiles();
-      logStatus("success", "Message sent.");
     }
 
     attachmentsInput.addEventListener("change", (event) => {
@@ -539,7 +624,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       renderSelectedFiles();
     });
 
-    document.getElementById("createConversation").addEventListener("click", async () => {
+    createConversationButton.addEventListener("click", async () => {
       try {
         await createConversation();
       } catch (error) {
@@ -547,7 +632,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       }
     });
 
-    document.getElementById("refreshConversation").addEventListener("click", async () => {
+    refreshConversationButton.addEventListener("click", async () => {
       try {
         await refreshConversation();
       } catch (error) {
@@ -555,19 +640,28 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       }
     });
 
-    document.getElementById("sendMessage").addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      button.disabled = true;
+    sendMessageButton.addEventListener("click", async () => {
       try {
         await sendMessage();
       } catch (error) {
         logStatus("error", error.message);
-      } finally {
-        button.disabled = false;
       }
     });
 
-    document.getElementById("clearComposer").addEventListener("click", () => {
+    cancelRequestButton.addEventListener("click", () => {
+      if (state.activeJobId && state.conversationId) {
+        fetch(`${apiBaseUrl()}/v1/conversations/${state.conversationId}/messages/jobs/${state.activeJobId}/cancel`, {
+          method: "POST",
+          headers: apiHeaders(false),
+        }).catch(() => {});
+      }
+      if (!state.abortController) {
+        return;
+      }
+      state.abortController.abort();
+    });
+
+    clearComposerButton.addEventListener("click", () => {
       messageTextInput.value = "";
       attachmentsInput.value = "";
       state.selectedFiles = [];
@@ -577,6 +671,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
 
     updateConversationState();
     renderSelectedFiles();
+    updateComposerControls();
   </script>
 </body>
 </html>
