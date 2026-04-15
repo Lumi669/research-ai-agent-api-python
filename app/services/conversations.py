@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, UTC
 from decimal import Decimal
 from uuid import uuid4
@@ -8,7 +9,7 @@ from uuid import uuid4
 from boto3.dynamodb.conditions import Attr, Key
 
 from app.core.errors import AppError
-from app.models.agent import AgentChatBody, AgentMessage, TextPart
+from app.models.agent import AgentChatBody, AgentMessage, TableData, TablePart, TextPart
 from app.models.conversations import (
     ConversationDetail,
     ConversationMessageJob,
@@ -85,6 +86,33 @@ def _detail_from_items(meta_item: dict[str, object], message_items: list[dict[st
         messageCount=_deserialize_int(meta_item.get("message_count")),
         messages=[_message_from_item(item) for item in sorted_messages],
     )
+
+
+def _split_markdown_row(row: str) -> list[str]:
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def _is_markdown_separator_row(row: str) -> bool:
+    cells = _split_markdown_row(row)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _parse_assistant_parts(reply: str) -> list[object]:
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", reply.strip()) if block.strip()]
+    if not blocks:
+        return [TextPart(type="text", text=reply.strip() or "(empty)")]
+
+    parts: list[object] = []
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) >= 2 and "|" in lines[0] and _is_markdown_separator_row(lines[1]):
+            headers = _split_markdown_row(lines[0])
+            rows = [_split_markdown_row(line) for line in lines[2:]]
+            normalized_rows = [row[: len(headers)] + [""] * max(0, len(headers) - len(row)) for row in rows]
+            parts.append(TablePart(type="table", table=TableData(columns=headers, rows=normalized_rows)))
+            continue
+        parts.append(TextPart(type="text", text=block))
+    return parts
 
 
 async def create_conversation(body: CreateConversationBody) -> ConversationDetail:
@@ -205,7 +233,8 @@ async def _build_agent_messages(conversation_id: str) -> tuple[ConversationDetai
 
 async def _store_assistant_message(conversation: ConversationDetail, assistant_reply: str) -> None:
     next_position = len(conversation.messages)
-    assistant_message_model = AgentMessage(role="assistant", parts=[TextPart(type="text", text=assistant_reply)])
+    assistant_parts = _parse_assistant_parts(assistant_reply)
+    assistant_message_model = AgentMessage(role="assistant", parts=assistant_parts)
     assistant_message = {
         "pk": _conversation_pk(conversation.id),
         "sk": _message_sk(next_position),

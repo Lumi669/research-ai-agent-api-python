@@ -56,6 +56,27 @@ uvicorn app.main:app --reload --port 8000
 - `MOCK_OPENAI=true` enables deterministic local responses.
 - `/v1/agent/chat` now uses a LangChain tool-calling agent when mock mode is disabled.
 - `/v1/conversations/*` stores separate multi-round conversations so each tab can keep its own history and resume later.
+- Conversation messages may include structured `parts`, not just plain `content`. Assistant replies can now return markdown tables as `table` parts, for example:
+  ```json
+  {
+    "role": "assistant",
+    "content": null,
+    "parts": [
+      {
+        "type": "table",
+        "table": {
+          "columns": ["Paper", "Key finding", "Worth pursuing?"],
+          "rows": [
+            ["VideoLLaMB", "Long-video understanding with recurrent memory", "Yes"],
+            ["Principles of Visual Tokens", "More efficient video understanding", "Yes"],
+            ["St4RTrack", "Joint 4D reconstruction and tracking", "Yes"]
+          ]
+        }
+      }
+    ]
+  }
+  ```
+  Frontends should prefer rendering `message.parts` by type, especially `text`, `table`, `image`, and `file`.
 - `/v1/uploads/presign` returns presigned S3 upload URLs and attachment parts that can be stored in DynamoDB-backed messages.
 - `/playground` provides a small local UI for testing conversation creation plus image/file uploads through the presign flow.
 - `OPENAI_MODEL` defaults to `gpt-5.4-mini`.
