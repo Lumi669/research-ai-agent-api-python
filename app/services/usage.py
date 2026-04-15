@@ -5,6 +5,8 @@ from uuid import uuid4
 from app.models.usage import UsageEvent, UsageSummary, RouteUsageSummary, ProviderUsageSummary, UsageProvider
 
 MODEL_PRICING = {
+    "gpt-5.4-mini": {"input": 0.75, "output": 4.5},
+    "gpt-5.4": {"input": 2.5, "output": 15.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4o": {"input": 2.5, "output": 10.0},
 }

@@ -1,28 +1,172 @@
-import json
 from typing import Any
 
-from openai import APIError
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
 from app.core.errors import AppError
 from app.models.agent import AgentChatBody, AgentChatData
 from app.models.conferences import AnalyzeConferenceBody
-from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, ReadPdfArticleBody, SummarizePaperBody
+from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, SummarizePaperBody
 from app.services.conference import analyze_conference
-from app.services.openai_client import get_openai_client
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
 from app.services.usage import get_usage_summary, list_usage_events
 
+DEFAULT_AGENT_SYSTEM_PROMPT = (
+    "You are a research AI agent. Hold a helpful conversation, decide when to use tools, "
+    "and ground your answers in tool results whenever the user needs paper analysis, PDF "
+    "reading, conference analysis, or usage data."
+)
+
+
+@tool
+async def summarize_paper_tool(text: str, title: str | None = None, mode: str = "standard") -> dict[str, Any]:
+    """Summarize one academic paper or excerpt into structured research notes."""
+
+    result = await summarize_paper(SummarizePaperBody(title=title, text=text, mode=mode))
+    return result.model_dump(mode="json", by_alias=True)
+
+
+@tool
+async def extract_paper_tool(text: str, title: str | None = None) -> dict[str, Any]:
+    """Extract keywords, datasets, metrics, and limitations from a paper excerpt."""
+
+    result = await extract_paper(ExtractPaperBody(title=title, text=text))
+    return result.model_dump(mode="json", by_alias=True)
+
+
+@tool
+async def read_pdf_article_tool(pdf_url: str, title: str | None = None, max_chars: int = 20_000) -> dict[str, Any]:
+    """Fetch a PDF article by URL and extract readable text plus metadata."""
+
+    result = await read_pdf_article(pdf_url=pdf_url, title=title, max_chars=max_chars)
+    return result.model_dump(mode="json", by_alias=True)
+
+
+@tool
+async def compare_pdf_articles_tool(
+    left_pdf_url: str,
+    right_pdf_url: str,
+    left_title: str | None = None,
+    right_title: str | None = None,
+    focus: str | None = None,
+    mode: str = "standard",
+    max_chars_per_paper: int = 12_000,
+) -> dict[str, Any]:
+    """Read two PDF articles and compare them for similarities and differences."""
+
+    result = await compare_pdf_articles(
+        ComparePdfArticlesBody(
+            left={"title": left_title, "pdfUrl": left_pdf_url},
+            right={"title": right_title, "pdfUrl": right_pdf_url},
+            focus=focus,
+            mode=mode,
+            maxCharsPerPaper=max_chars_per_paper,
+        )
+    )
+    return result.model_dump(mode="json", by_alias=True)
+
+
+@tool
+async def analyze_conference_tool(
+    conference: str,
+    source_url: str,
+    mode: str = "standard",
+    max_papers: int = 8,
+    max_paper_chars: int = 2500,
+) -> dict[str, Any]:
+    """Fetch a conference accepted-papers page and synthesize cross-paper findings."""
+
+    result = await analyze_conference(
+        AnalyzeConferenceBody(
+            conference=conference,
+            sourceUrl=source_url,
+            mode=mode,
+            maxPapers=max_papers,
+            maxPaperChars=max_paper_chars,
+        )
+    )
+    return result.model_dump(mode="json", by_alias=True)
+
+
+@tool
+def get_usage_summary_tool() -> dict[str, Any]:
+    """Return aggregate token usage and estimated cost summary for the API."""
+
+    result = get_usage_summary()
+    return result.model_dump(mode="json", by_alias=True)
+
+
+@tool
+def list_usage_events_tool(limit: int = 20) -> list[dict[str, Any]]:
+    """Return recent usage events."""
+
+    return [event.model_dump(mode="json", by_alias=True) for event in list_usage_events(limit)]
+
+
+AGENT_TOOLS = [
+    summarize_paper_tool,
+    extract_paper_tool,
+    read_pdf_article_tool,
+    compare_pdf_articles_tool,
+    analyze_conference_tool,
+    get_usage_summary_tool,
+    list_usage_events_tool,
+]
+
+
+def _build_llm() -> ChatOpenAI:
+    if not settings.openai_api_key:
+        raise AppError(503, "OpenAI API key is not configured (OPENAI_API_KEY)")
+
+    return ChatOpenAI(model=settings.openai_model, temperature=0.1, api_key=settings.openai_api_key)
+
+
+def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], str]:
+    system_messages = [message.content.strip() for message in body.messages if message.role == "system" and message.content.strip()]
+    conversation: list[BaseMessage] = []
+    last_user_message: str | None = None
+
+    for message in body.messages:
+        if message.role == "system":
+            continue
+        if message.role == "user":
+            conversation.append(HumanMessage(content=message.content))
+            last_user_message = message.content
+        elif message.role == "assistant":
+            conversation.append(AIMessage(content=message.content))
+
+    if last_user_message is None:
+        raise AppError(400, "At least one user message is required.")
+
+    system_prompt = "\n\n".join(system_messages) if system_messages else DEFAULT_AGENT_SYSTEM_PROMPT
+    return system_prompt, conversation, last_user_message
+
 
 async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
-    last_user = next((message.content for message in reversed(body.messages) if message.role == "user"), None)
-    if not last_user:
-        raise AppError(400, "At least one user message is required.")
+    system_prompt, _history, last_user = _extract_agent_inputs(body)
     if any(token in last_user.lower() for token in ["usage", "cost", "spend", "token"]):
         summary = get_usage_summary()
-        return AgentChatData(reply=f"Mock agent summary: {summary.total_events} tracked events, {summary.total_tokens} total tokens, estimated cost ${summary.total_estimated_cost_usd:.6f}.", provider="mock", toolsUsed=["get_usage_summary"])
-    return AgentChatData(reply="Hello, Mock agent mode is enabled. I can summarize papers, analyze conference pages, compare PDF articles, and report usage once live model access is available.", provider="mock", toolsUsed=[])
+        return AgentChatData(
+            reply=(
+                f"Mock agent summary: {summary.total_events} tracked events, "
+                f"{summary.total_tokens} total tokens, estimated cost "
+                f"${summary.total_estimated_cost_usd:.6f}."
+            ),
+            provider="mock",
+            toolsUsed=["get_usage_summary_tool"],
+        )
+    return AgentChatData(
+        reply=(
+            f"Hello, mock agent mode is enabled. I am using the system prompt: {system_prompt[:120]}..."
+            " I can summarize papers, analyze conference pages, compare PDF articles, and report usage once live model access is available."
+        ),
+        provider="mock",
+        toolsUsed=[],
+    )
 
 
 async def chat_with_agent(body: AgentChatBody) -> AgentChatData:
@@ -32,110 +176,27 @@ async def chat_with_agent(body: AgentChatBody) -> AgentChatData:
     if settings.agent_provider.strip().lower() == "bedrock":
         raise AppError(501, "AGENT_PROVIDER=bedrock is not implemented yet.")
 
-    client = get_openai_client()
-    messages: list[dict[str, Any]] = [{"role": msg.role, "content": msg.content} for msg in body.messages]
+    system_prompt, conversation, _last_user = _extract_agent_inputs(body)
+    agent = create_agent(model=_build_llm(), tools=AGENT_TOOLS, system_prompt=system_prompt)
+
+    try:
+        result = await agent.ainvoke({"messages": conversation})
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(502, f"Agent execution failed: {exc}") from exc
+
+    result_messages = result.get("messages", [])
+    final_message = next((message for message in reversed(result_messages) if isinstance(message, AIMessage) and message.content), None)
+    if not final_message:
+        raise AppError(502, "The agent returned an empty reply.")
+
     tools_used: list[str] = []
+    for message in result_messages:
+        if isinstance(message, AIMessage):
+            for tool_call in getattr(message, "tool_calls", []):
+                tool_name = tool_call.get("name")
+                if tool_name:
+                    tools_used.append(tool_name)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "summarize_paper",
-                "description": "Summarize a single academic paper or excerpt into structured research notes.",
-                "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "text": {"type": "string"}, "mode": {"type": "string", "enum": ["short", "standard"]}}, "required": ["text"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "extract_paper",
-                "description": "Extract keywords, datasets, metrics, and limitations from a paper excerpt.",
-                "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "text": {"type": "string"}}, "required": ["text"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_pdf_article",
-                "description": "Fetch a PDF article by URL and extract readable text plus basic metadata.",
-                "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "pdfUrl": {"type": "string"}, "maxChars": {"type": "integer"}}, "required": ["pdfUrl"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "compare_pdf_articles",
-                "description": "Read two PDF articles and compare them for similarities and differences.",
-                "parameters": {"type": "object", "properties": {"left": {"type": "object"}, "right": {"type": "object"}, "focus": {"type": "string"}, "mode": {"type": "string", "enum": ["short", "standard"]}, "maxCharsPerPaper": {"type": "integer"}}, "required": ["left", "right"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "analyze_conference",
-                "description": "Fetch a conference accepted-papers page and synthesize cross-paper findings.",
-                "parameters": {"type": "object", "properties": {"conference": {"type": "string"}, "sourceUrl": {"type": "string"}, "mode": {"type": "string", "enum": ["short", "standard"]}, "maxPapers": {"type": "integer"}, "maxPaperChars": {"type": "integer"}}, "required": ["conference", "sourceUrl"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_usage_summary",
-                "description": "Return aggregate token usage and estimated cost summary for the API.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_usage_events",
-                "description": "Return recent usage events.",
-                "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}},
-            },
-        },
-    ]
-
-    for _ in range(4):
-        try:
-            completion = client.chat.completions.create(
-                model=settings.openai_model,
-                temperature=0.1,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-            )
-        except APIError as exc:
-            raise AppError(502, f"OpenAI request failed ({exc.status_code or 'error'}): {exc.message}") from exc
-
-        assistant = completion.choices[0].message
-        if not assistant.tool_calls:
-            content = assistant.content or ""
-            if not content:
-                raise AppError(502, "The agent returned an empty reply.")
-            return AgentChatData(reply=content, provider="openai", toolsUsed=tools_used)
-
-        messages.append({"role": "assistant", "content": assistant.content or "", "tool_calls": [tool.model_dump() for tool in assistant.tool_calls]})
-        for tool_call in assistant.tool_calls:
-            name = tool_call.function.name
-            args = json.loads(tool_call.function.arguments or "{}")
-            tools_used.append(name)
-            if name == "summarize_paper":
-                result = await summarize_paper(SummarizePaperBody(**args))
-            elif name == "extract_paper":
-                result = await extract_paper(ExtractPaperBody(**args))
-            elif name == "read_pdf_article":
-                result = await read_pdf_article(str(args["pdfUrl"]), args.get("title"), int(args.get("maxChars", 20000)))
-            elif name == "compare_pdf_articles":
-                result = await compare_pdf_articles(ComparePdfArticlesBody(**args))
-            elif name == "analyze_conference":
-                result = await analyze_conference(AnalyzeConferenceBody(**args))
-            elif name == "get_usage_summary":
-                result = get_usage_summary()
-            elif name == "list_usage_events":
-                result = list_usage_events(int(args.get("limit", 20)))
-            else:
-                result = {"error": f"Unsupported tool: {name}"}
-
-            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(result.model_dump(mode="json") if hasattr(result, "model_dump") else result, default=str)})
-
-    raise AppError(502, "The agent exceeded the maximum tool-call loop limit.")
+    return AgentChatData(reply=str(final_message.content).strip(), provider="openai", toolsUsed=tools_used)

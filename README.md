@@ -30,4 +30,6 @@ uvicorn app.main:app --reload --port 8000
 
 - Protected endpoints require `x-api-key: <INTERNAL_API_KEY>`.
 - `MOCK_OPENAI=true` enables deterministic local responses.
+- `/v1/agent/chat` now uses a LangChain tool-calling agent when mock mode is disabled.
+- `OPENAI_MODEL` defaults to `gpt-5.4-mini`.
 - The job store and usage store are in-memory for now.

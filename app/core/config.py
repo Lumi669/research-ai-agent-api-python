@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, alias="PORT")
     internal_api_key: str | None = Field(default=None, alias="INTERNAL_API_KEY")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
     mock_openai: bool = Field(default=False, alias="MOCK_OPENAI")
     agent_provider: str = Field(default="openai", alias="AGENT_PROVIDER")
 
