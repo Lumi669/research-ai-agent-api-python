@@ -66,11 +66,11 @@ class AgentMessage(BaseModel):
 
     @property
     def text_content(self) -> str:
-        if self.content:
-            return self.content
-        if not self.parts:
-            return ""
         rendered_parts: list[str] = []
+        if self.content:
+            rendered_parts.append(self.content)
+        if not self.parts:
+            return "\n\n".join(fragment for fragment in rendered_parts if fragment).strip()
         for part in self.parts:
             if isinstance(part, TextPart):
                 rendered_parts.append(part.text)
