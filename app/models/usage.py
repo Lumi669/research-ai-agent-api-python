@@ -40,3 +40,4 @@ class UsageSummary(BaseModel):
     total_estimated_cost_usd: float
     by_route: list[RouteUsageSummary]
     by_provider: list[ProviderUsageSummary]
+    source: Literal["local", "dynamodb"] = "local"

@@ -8,9 +8,9 @@ router = APIRouter(prefix="/v1/usage", tags=["usage"], dependencies=[Depends(req
 
 @router.get("/summary")
 async def usage_summary() -> dict:
-    return {"success": True, "data": get_usage_summary()}
+    return {"success": True, "data": await get_usage_summary()}
 
 
 @router.get("/events")
 async def usage_events(limit: int = Query(default=20, ge=1, le=200)) -> dict:
-    return {"success": True, "data": list_usage_events(limit)}
+    return {"success": True, "data": await list_usage_events(limit)}

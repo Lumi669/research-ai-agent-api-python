@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     s3_presign_ttl_seconds: int = Field(default=900, alias="S3_PRESIGN_TTL_SECONDS")
     mock_openai: bool = Field(default=False, alias="MOCK_OPENAI")
     agent_provider: str = Field(default="openai", alias="AGENT_PROVIDER")
+    usage_store_path: str = Field(default=".data/usage_events.json", alias="USAGE_STORE_PATH")
 
 
 settings = Settings()

@@ -13,13 +13,29 @@ from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, Summariz
 from app.services.conference import analyze_conference
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
-from app.services.usage import get_usage_summary, list_usage_events
+from app.services.usage import get_local_usage_summary, list_local_usage_events, record_usage_event
 
 DEFAULT_AGENT_SYSTEM_PROMPT = (
     "You are a research AI agent. Hold a helpful conversation, decide when to use tools, "
     "and ground your answers in tool results whenever the user needs paper analysis, PDF "
     "reading, conference analysis, or usage data."
 )
+
+
+def _extract_message_token_usage(message: BaseMessage) -> tuple[int, int]:
+    usage_metadata = getattr(message, "usage_metadata", None) or {}
+    if isinstance(usage_metadata, dict):
+        prompt_tokens = int(usage_metadata.get("input_tokens") or 0)
+        completion_tokens = int(usage_metadata.get("output_tokens") or 0)
+        if prompt_tokens or completion_tokens:
+            return prompt_tokens, completion_tokens
+
+    response_metadata = getattr(message, "response_metadata", None) or {}
+    token_usage = response_metadata.get("token_usage") if isinstance(response_metadata, dict) else None
+    if isinstance(token_usage, dict):
+        return int(token_usage.get("prompt_tokens") or 0), int(token_usage.get("completion_tokens") or 0)
+
+    return 0, 0
 
 
 @tool
@@ -96,7 +112,7 @@ async def analyze_conference_tool(
 def get_usage_summary_tool() -> dict[str, Any]:
     """Return aggregate token usage and estimated cost summary for the API."""
 
-    result = get_usage_summary()
+    result = get_local_usage_summary()
     return result.model_dump(mode="json", by_alias=True)
 
 
@@ -104,7 +120,7 @@ def get_usage_summary_tool() -> dict[str, Any]:
 def list_usage_events_tool(limit: int = 20) -> list[dict[str, Any]]:
     """Return recent usage events."""
 
-    return [event.model_dump(mode="json", by_alias=True) for event in list_usage_events(limit)]
+    return [event.model_dump(mode="json", by_alias=True) for event in list_local_usage_events(limit)]
 
 
 AGENT_TOOLS = [
@@ -149,7 +165,8 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
 async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
     system_prompt, _history, last_user = _extract_agent_inputs(body)
     if any(token in last_user.lower() for token in ["usage", "cost", "spend", "token"]):
-        summary = get_usage_summary()
+        summary = get_local_usage_summary()
+        record_usage_event("/v1/agent/chat", "chatWithAgent", "mock", settings.openai_model, 0, 0)
         return AgentChatData(
             reply=(
                 f"Mock agent summary: {summary.total_events} tracked events, "
@@ -159,6 +176,7 @@ async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
             provider="mock",
             toolsUsed=["get_usage_summary_tool"],
         )
+    record_usage_event("/v1/agent/chat", "chatWithAgent", "mock", settings.openai_model, 0, 0)
     return AgentChatData(
         reply=(
             f"Hello, mock agent mode is enabled. I am using the system prompt: {system_prompt[:120]}..."
@@ -192,11 +210,25 @@ async def chat_with_agent(body: AgentChatBody) -> AgentChatData:
         raise AppError(502, "The agent returned an empty reply.")
 
     tools_used: list[str] = []
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
     for message in result_messages:
+        prompt_tokens, completion_tokens = _extract_message_token_usage(message)
+        total_prompt_tokens += prompt_tokens
+        total_completion_tokens += completion_tokens
         if isinstance(message, AIMessage):
             for tool_call in getattr(message, "tool_calls", []):
                 tool_name = tool_call.get("name")
                 if tool_name:
                     tools_used.append(tool_name)
+
+    record_usage_event(
+        "/v1/agent/chat",
+        "chatWithAgent",
+        "openai",
+        settings.openai_model,
+        total_prompt_tokens,
+        total_completion_tokens,
+    )
 
     return AgentChatData(reply=str(final_message.content).strip(), provider="openai", toolsUsed=tools_used)
