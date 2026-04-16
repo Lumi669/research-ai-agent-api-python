@@ -21,7 +21,7 @@ from app.models.conversations import (
 )
 from app.services.agent import chat_with_agent
 from app.services.dynamodb import get_dynamodb_table
-from app.services.s3 import validate_s3_message_parts
+from app.services.s3 import delete_conversation_prefix, delete_s3_objects, extract_s3_objects, validate_s3_message_parts
 
 CONVERSATION_META_SK = "META"
 MESSAGE_SK_PREFIX = "MSG#"
@@ -186,6 +186,12 @@ async def update_conversation(conversation_id: str, body: UpdateConversationBody
 
 async def delete_conversation(conversation_id: str) -> None:
     conversation = await get_conversation(conversation_id)
+    s3_objects: list[tuple[str, str]] = []
+    for message in conversation.messages:
+        s3_objects.extend(extract_s3_objects(message.parts))
+
+    await delete_s3_objects(s3_objects)
+    await delete_conversation_prefix(conversation_id)
 
     def _delete_items() -> None:
         table = get_dynamodb_table()

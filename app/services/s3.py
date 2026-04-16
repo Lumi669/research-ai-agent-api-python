@@ -131,3 +131,116 @@ async def validate_s3_message_parts(parts: list[MessagePart] | None, conversatio
             raise AppError(502, f"Failed to validate S3 object: {exc}") from exc
         except BotoCoreError as exc:
             raise AppError(502, f"Failed to validate S3 object: {exc}") from exc
+
+
+def extract_s3_objects(parts: list[MessagePart] | None) -> list[tuple[str, str]]:
+    if not parts:
+        return []
+
+    objects: list[tuple[str, str]] = []
+    for part in parts:
+        if isinstance(part, ImagePart):
+            objects.append((part.image.bucket, part.image.key))
+        elif isinstance(part, FilePart):
+            objects.append((part.file.bucket, part.file.key))
+    return objects
+
+
+async def delete_s3_objects(objects: list[tuple[str, str]]) -> None:
+    if not objects:
+        return
+
+    unique_objects = list(dict.fromkeys(objects))
+
+    def _delete_batch(bucket: str, keys: list[str]) -> None:
+        if not keys:
+            return
+
+        response = get_s3_client().delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+        )
+        errors = response.get("Errors", [])
+        if errors:
+            first_error = errors[0]
+            raise AppError(502, f"Failed to delete S3 object {first_error.get('Key')}: {first_error.get('Message')}")
+
+    buckets: dict[str, list[str]] = {}
+    for bucket, key in unique_objects:
+        buckets.setdefault(bucket, []).append(key)
+
+    try:
+        for bucket, keys in buckets.items():
+            for start in range(0, len(keys), 1000):
+                await asyncio.to_thread(_delete_batch, bucket, keys[start : start + 1000])
+    except (BotoCoreError, ClientError) as exc:
+        raise AppError(502, f"Failed to delete S3 objects: {exc}") from exc
+
+
+async def delete_conversation_prefix(conversation_id: str) -> None:
+    bucket = _normalized_bucket()
+    prefix = f"{_conversation_prefix(conversation_id)}/"
+
+    def _delete_prefix() -> None:
+        client = get_s3_client()
+
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for item in page.get("Contents", []):
+                key = item.get("Key")
+                if key:
+                    keys.append(str(key))
+
+        for start in range(0, len(keys), 1000):
+            batch_keys = keys[start : start + 1000]
+            if not batch_keys:
+                continue
+            response = client.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": [{"Key": key} for key in batch_keys], "Quiet": True},
+            )
+            errors = response.get("Errors", [])
+            if errors:
+                first_error = errors[0]
+                raise AppError(502, f"Failed to delete S3 object {first_error.get('Key')}: {first_error.get('Message')}")
+
+        version_paginator = client.get_paginator("list_object_versions")
+        versioned_objects: list[dict[str, str]] = []
+        for page in version_paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for item in page.get("Versions", []):
+                key = item.get("Key")
+                version_id = item.get("VersionId")
+                if key and version_id:
+                    versioned_objects.append({"Key": str(key), "VersionId": str(version_id)})
+            for item in page.get("DeleteMarkers", []):
+                key = item.get("Key")
+                version_id = item.get("VersionId")
+                if key and version_id:
+                    versioned_objects.append({"Key": str(key), "VersionId": str(version_id)})
+
+        for start in range(0, len(versioned_objects), 1000):
+            batch_objects = versioned_objects[start : start + 1000]
+            if not batch_objects:
+                continue
+            response = client.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": batch_objects, "Quiet": True},
+            )
+            errors = response.get("Errors", [])
+            if errors:
+                first_error = errors[0]
+                raise AppError(
+                    502,
+                    f"Failed to delete versioned S3 object {first_error.get('Key')}: {first_error.get('Message')}",
+                )
+
+    try:
+        await asyncio.to_thread(_delete_prefix)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"NoSuchBucket", "404", "NotFound"}:
+            raise AppError(502, f"Failed to delete S3 prefix {prefix}: {exc}") from exc
+        raise AppError(502, f"Failed to delete S3 prefix {prefix}: {exc}") from exc
+    except BotoCoreError as exc:
+        raise AppError(502, f"Failed to delete S3 prefix {prefix}: {exc}") from exc
