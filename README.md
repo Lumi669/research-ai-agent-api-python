@@ -18,8 +18,6 @@ FastAPI port of the research AI agent API. This service is designed to be consum
 - `GET /v1/conversations/{conversation_id}`
 - `POST /v1/conversations/{conversation_id}/messages`
 - `POST /v1/uploads/presign`
-- `GET /v1/usage/summary`
-- `GET /v1/usage/events`
 - `GET /playground`
 
 ## Setup
@@ -56,7 +54,6 @@ uvicorn app.main:app --reload --port 8000
 - `MOCK_OPENAI=true` enables deterministic local responses.
 - `/v1/agent/chat` now uses a LangChain tool-calling agent when mock mode is disabled.
 - `/v1/conversations/*` stores separate multi-round conversations so each tab can keep its own history and resume later.
-- `/v1/usage/summary` and `/v1/usage/events` store per-request token usage and estimated cost for this API. When `DYNAMODB_TABLE_NAME` is configured, usage history is persisted in DynamoDB alongside conversations.
 - Conversation messages may include structured `parts`, not just plain `content`. Assistant replies can now return markdown tables as `table` parts, for example:
   ```json
   {
@@ -82,4 +79,3 @@ uvicorn app.main:app --reload --port 8000
 - `/playground` provides a small local UI for testing conversation creation plus image/file uploads through the presign flow.
 - `OPENAI_MODEL` defaults to `gpt-5.4-mini`.
 - The job store is in-memory for now.
-- Usage events are persisted to DynamoDB when `DYNAMODB_TABLE_NAME` is configured. The local `.data/usage_events.json` file remains as a fallback for local development when DynamoDB is not available.

@@ -17,7 +17,6 @@ from app.models.papers import (
 from app.services.mock_ai import compare_pdf_articles_mock, extract_paper_mock, summarize_paper_mock
 from app.services.openai_client import get_openai_client
 from app.services.pdf_reader import read_pdf_article
-from app.services.usage import record_usage_event
 
 CONFIDENCE_NOTES_MAX_CHARS = 400
 
@@ -67,7 +66,6 @@ def _compare_user_prompt(body: ComparePdfArticlesBody, left_text: str, right_tex
 
 async def summarize_paper(body: SummarizePaperBody) -> SummarizePaperData:
     if settings.mock_openai:
-        record_usage_event("/v1/papers/summarize", "summarizePaper", "mock", settings.openai_model, 0, 0)
         return summarize_paper_mock(body)
 
     client = get_openai_client()
@@ -92,13 +90,11 @@ async def summarize_paper(body: SummarizePaperBody) -> SummarizePaperData:
 
     raw = _parse_json(content)
     data = SummarizePaperData(**raw)
-    record_usage_event("/v1/papers/summarize", "summarizePaper", "openai", settings.openai_model, completion.usage.prompt_tokens if completion.usage else 0, completion.usage.completion_tokens if completion.usage else 0)
     return data
 
 
 async def extract_paper(body: ExtractPaperBody) -> ExtractPaperData:
     if settings.mock_openai:
-        record_usage_event("/v1/papers/extract", "extractPaper", "mock", settings.openai_model, 0, 0)
         return extract_paper_mock(body)
 
     client = get_openai_client()
@@ -121,7 +117,6 @@ async def extract_paper(body: ExtractPaperBody) -> ExtractPaperData:
         raise AppError(502, "The model returned an empty response. Please retry.")
 
     data = ExtractPaperData(**_parse_json(content))
-    record_usage_event("/v1/papers/extract", "extractPaper", "openai", settings.openai_model, completion.usage.prompt_tokens if completion.usage else 0, completion.usage.completion_tokens if completion.usage else 0)
     return data
 
 
@@ -130,7 +125,6 @@ async def compare_pdf_articles(body: ComparePdfArticlesBody) -> ComparePdfArticl
     right = await read_pdf_article(str(body.right.pdf_url), body.right.title, body.max_chars_per_paper)
 
     if settings.mock_openai:
-        record_usage_event("/v1/papers/compare-pdfs", "comparePdfArticles", "mock", settings.openai_model, 0, 0)
         return compare_pdf_articles_mock(body, left, right)
 
     client = get_openai_client()
@@ -153,7 +147,6 @@ async def compare_pdf_articles(body: ComparePdfArticlesBody) -> ComparePdfArticl
         raise AppError(502, "The model returned an empty comparison response. Please retry.")
 
     raw = _parse_json(content)
-    record_usage_event("/v1/papers/compare-pdfs", "comparePdfArticles", "openai", settings.openai_model, completion.usage.prompt_tokens if completion.usage else 0, completion.usage.completion_tokens if completion.usage else 0)
     return ComparePdfArticlesData(
         focus=body.focus,
         papers=[

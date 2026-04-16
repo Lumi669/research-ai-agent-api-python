@@ -13,12 +13,11 @@ from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, Summariz
 from app.services.conference import analyze_conference
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
-from app.services.usage import get_local_usage_summary, list_local_usage_events, record_usage_event
 
 DEFAULT_AGENT_SYSTEM_PROMPT = (
     "You are a research AI agent. Hold a helpful conversation, decide when to use tools, "
     "and ground your answers in tool results whenever the user needs paper analysis, PDF "
-    "reading, conference analysis, or usage data."
+    "reading, or conference analysis."
 )
 
 
@@ -108,29 +107,12 @@ async def analyze_conference_tool(
     return result.model_dump(mode="json", by_alias=True)
 
 
-@tool
-def get_usage_summary_tool() -> dict[str, Any]:
-    """Return aggregate token usage and estimated cost summary for the API."""
-
-    result = get_local_usage_summary()
-    return result.model_dump(mode="json", by_alias=True)
-
-
-@tool
-def list_usage_events_tool(limit: int = 20) -> list[dict[str, Any]]:
-    """Return recent usage events."""
-
-    return [event.model_dump(mode="json", by_alias=True) for event in list_local_usage_events(limit)]
-
-
 AGENT_TOOLS = [
     summarize_paper_tool,
     extract_paper_tool,
     read_pdf_article_tool,
     compare_pdf_articles_tool,
     analyze_conference_tool,
-    get_usage_summary_tool,
-    list_usage_events_tool,
 ]
 
 
@@ -164,23 +146,10 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
 
 async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
     system_prompt, _history, last_user = _extract_agent_inputs(body)
-    if any(token in last_user.lower() for token in ["usage", "cost", "spend", "token"]):
-        summary = get_local_usage_summary()
-        record_usage_event("/v1/agent/chat", "chatWithAgent", "mock", settings.openai_model, 0, 0)
-        return AgentChatData(
-            reply=(
-                f"Mock agent summary: {summary.total_events} tracked events, "
-                f"{summary.total_tokens} total tokens, estimated cost "
-                f"${summary.total_estimated_cost_usd:.6f}."
-            ),
-            provider="mock",
-            toolsUsed=["get_usage_summary_tool"],
-        )
-    record_usage_event("/v1/agent/chat", "chatWithAgent", "mock", settings.openai_model, 0, 0)
     return AgentChatData(
         reply=(
             f"Hello, mock agent mode is enabled. I am using the system prompt: {system_prompt[:120]}..."
-            " I can summarize papers, analyze conference pages, compare PDF articles, and report usage once live model access is available."
+            " I can summarize papers, analyze conference pages, and compare PDF articles once live model access is available."
         ),
         provider="mock",
         toolsUsed=[],
@@ -221,14 +190,5 @@ async def chat_with_agent(body: AgentChatBody) -> AgentChatData:
                 tool_name = tool_call.get("name")
                 if tool_name:
                     tools_used.append(tool_name)
-
-    record_usage_event(
-        "/v1/agent/chat",
-        "chatWithAgent",
-        "openai",
-        settings.openai_model,
-        total_prompt_tokens,
-        total_completion_tokens,
-    )
 
     return AgentChatData(reply=str(final_message.content).strip(), provider="openai", toolsUsed=tools_used)

@@ -11,7 +11,6 @@ from app.core.errors import AppError
 from app.models.conferences import AnalyzeConferenceBody, AnalyzeConferenceData, ConferencePaperSnapshot
 from app.services.mock_ai import analyze_conference_mock
 from app.services.openai_client import get_openai_client
-from app.services.usage import record_usage_event
 
 LISTING_TEXT_MAX_CHARS = 6000
 
@@ -100,7 +99,6 @@ async def analyze_conference(input_data: AnalyzeConferenceBody) -> AnalyzeConfer
         raise AppError(502, "Paper links were discovered, but none of the linked pages could be read successfully.")
 
     if settings.mock_openai:
-        record_usage_event("/v1/conferences/analyze", "analyzeConference", "mock", settings.openai_model, 0, 0)
         return analyze_conference_mock(input_data, papers, len(candidates))
 
     client = get_openai_client()
@@ -122,7 +120,6 @@ async def analyze_conference(input_data: AnalyzeConferenceBody) -> AnalyzeConfer
     if not content:
         raise AppError(502, "The model returned an empty response. Please retry.")
     raw = json.loads(content)
-    record_usage_event("/v1/conferences/analyze", "analyzeConference", "openai", settings.openai_model, completion.usage.prompt_tokens if completion.usage else 0, completion.usage.completion_tokens if completion.usage else 0)
     return AnalyzeConferenceData(
         conference=input_data.conference,
         sourceUrl=str(input_data.source_url),
