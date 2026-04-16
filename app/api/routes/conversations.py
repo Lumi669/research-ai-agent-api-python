@@ -1,15 +1,17 @@
 from fastapi import APIRouter, Depends
 
 from app.core.security import require_internal_api_key
-from app.models.conversations import CreateConversationBody, PostConversationMessageBody
+from app.models.conversations import CreateConversationBody, PostConversationMessageBody, UpdateConversationBody
 from app.services.conversations import (
     cancel_conversation_message_job,
     create_conversation,
     create_conversation_message_job,
+    delete_conversation,
     get_conversation,
     get_conversation_message_job,
     list_conversations,
     post_conversation_message,
+    update_conversation,
 )
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"], dependencies=[Depends(require_internal_api_key)])
@@ -28,6 +30,17 @@ async def get_conversations() -> dict:
 @router.get("/{conversation_id}")
 async def get_conversation_by_id(conversation_id: str) -> dict:
     return {"success": True, "data": await get_conversation(conversation_id)}
+
+
+@router.patch("/{conversation_id}")
+async def patch_conversation_by_id(conversation_id: str, body: UpdateConversationBody) -> dict:
+    return {"success": True, "data": await update_conversation(conversation_id, body)}
+
+
+@router.delete("/{conversation_id}")
+async def delete_conversation_by_id(conversation_id: str) -> dict:
+    await delete_conversation(conversation_id)
+    return {"success": True, "data": {"id": conversation_id, "deleted": True}}
 
 
 @router.post("/{conversation_id}/messages")

@@ -12,6 +12,10 @@ class CreateConversationBody(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class UpdateConversationBody(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+
+
 class ConversationSummary(BaseModel):
     id: str
     title: str | None

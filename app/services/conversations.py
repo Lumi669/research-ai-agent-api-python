@@ -17,6 +17,7 @@ from app.models.conversations import (
     ConversationSummary,
     PostConversationMessageBody,
     PostConversationMessageData,
+    UpdateConversationBody,
 )
 from app.services.agent import chat_with_agent
 from app.services.dynamodb import get_dynamodb_table
@@ -167,6 +168,42 @@ async def get_conversation(conversation_id: str) -> ConversationDetail:
 
     message_items = [item for item in items if str(item.get("sk", "")).startswith(MESSAGE_SK_PREFIX)]
     return _detail_from_items(meta_item, message_items)
+
+
+async def update_conversation(conversation_id: str, body: UpdateConversationBody) -> ConversationDetail:
+    await get_conversation(conversation_id)
+    await asyncio.to_thread(
+        get_dynamodb_table().update_item,
+        Key={"pk": _conversation_pk(conversation_id), "sk": CONVERSATION_META_SK},
+        UpdateExpression="SET title = :title, updated_at = :updated_at",
+        ExpressionAttributeValues={
+            ":title": _normalize_optional(body.title),
+            ":updated_at": _now_iso(),
+        },
+    )
+    return await get_conversation(conversation_id)
+
+
+async def delete_conversation(conversation_id: str) -> None:
+    conversation = await get_conversation(conversation_id)
+
+    def _delete_items() -> None:
+        table = get_dynamodb_table()
+        with table.batch_writer() as batch:
+            batch.delete_item(Key={"pk": _conversation_pk(conversation.id), "sk": CONVERSATION_META_SK})
+            for position, _message in enumerate(conversation.messages):
+                batch.delete_item(Key={"pk": _conversation_pk(conversation.id), "sk": _message_sk(position)})
+
+    await asyncio.to_thread(_delete_items)
+
+    for job_id, job in list(_conversation_message_jobs.items()):
+        if job.conversation_id != conversation_id:
+            continue
+        task = _conversation_job_tasks.pop(job_id, None)
+        if task is not None:
+            task.cancel()
+        job.status = "canceled"
+        job.updated_at = _now_iso()
 
 
 async def _update_conversation_meta(
