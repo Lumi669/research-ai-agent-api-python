@@ -14,13 +14,6 @@ from app.services.conference import analyze_conference
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
 
-DEFAULT_AGENT_SYSTEM_PROMPT = (
-    "You are a research AI agent. Hold a helpful conversation, decide when to use tools, "
-    "and ground your answers in tool results whenever the user needs paper analysis, PDF "
-    "reading, or conference analysis."
-)
-
-
 def _extract_message_token_usage(message: BaseMessage) -> tuple[int, int]:
     usage_metadata = getattr(message, "usage_metadata", None) or {}
     if isinstance(usage_metadata, dict):
@@ -140,7 +133,7 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
     if last_user_message is None:
         raise AppError(400, "At least one user message is required.")
 
-    system_prompt = "\n\n".join(system_messages) if system_messages else DEFAULT_AGENT_SYSTEM_PROMPT
+    system_prompt = "\n\n".join(system_messages) if system_messages else settings.agent_system_prompt
     return system_prompt, conversation, last_user_message
 
 

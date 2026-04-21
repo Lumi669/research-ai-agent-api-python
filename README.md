@@ -53,6 +53,7 @@ uvicorn app.main:app --reload --port 8000
   Replace the example origins with the exact frontend URLs that will call the presigned upload URL.
 - `MOCK_OPENAI=true` enables deterministic local responses.
 - `/v1/agent/chat` now uses a LangChain tool-calling agent when mock mode is disabled.
+- `AGENT_SYSTEM_PROMPT` lets you override the default research-agent system prompt without editing code.
 - `/v1/conversations/*` stores separate multi-round conversations so each tab can keep its own history and resume later.
 - Conversation messages may include structured `parts`, not just plain `content`. Assistant replies can now return markdown tables as `table` parts, for example:
   ```json
