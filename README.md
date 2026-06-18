@@ -16,11 +16,35 @@ FastAPI port of the research AI agent API. This service is designed to be consum
 - `POST /v1/conversations`
 - `GET /v1/conversations`
 - `GET /v1/conversations/{conversation_id}`
+- `PATCH /v1/conversations/{conversation_id}`
+- `DELETE /v1/conversations/{conversation_id}`
 - `POST /v1/conversations/{conversation_id}/messages`
+- `POST /v1/conversations/{conversation_id}/messages/jobs`
+- `GET /v1/conversations/{conversation_id}/messages/jobs/{job_id}`
+- `POST /v1/conversations/{conversation_id}/messages/jobs/{job_id}/cancel`
 - `POST /v1/uploads/presign`
 - `GET /playground`
 
-## Setup
+## Quick Start
+
+First setup:
+
+```bash
+cd /Users/jinghuan/Desktop/research-ai-agent-api-python
+make setup
+make dev
+```
+
+Then open `http://localhost:8000/playground`.
+
+Repeat runs:
+
+```bash
+cd /Users/jinghuan/Desktop/research-ai-agent-api-python
+make dev
+```
+
+Manual equivalent:
 
 ```bash
 python3 -m venv .venv
@@ -36,6 +60,7 @@ uvicorn app.main:app --reload --port 8000
 - Set `DYNAMODB_TABLE_NAME` to a DynamoDB table for persistent conversation threads.
 - `AWS_REGION` controls the DynamoDB region, and `DYNAMODB_ENDPOINT_URL` is optional for local DynamoDB testing.
 - Set `S3_BUCKET_NAME` to enable presigned uploads for image/file attachments.
+- `S3_ENDPOINT_URL` is optional for S3-compatible/local endpoints.
 - `S3_UPLOAD_PREFIX` controls the object key prefix, and `S3_PRESIGN_TTL_SECONDS` controls upload URL expiry.
 - Browser uploads to S3 need bucket CORS that allows your frontend origin to send `PUT` requests with `Content-Type`.
   Example S3 CORS configuration:
