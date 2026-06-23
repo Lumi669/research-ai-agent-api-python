@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from langchain.agents import create_agent
@@ -10,9 +11,40 @@ from app.core.errors import AppError
 from app.models.agent import AgentChatBody, AgentChatData
 from app.models.conferences import AnalyzeConferenceBody
 from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, SummarizePaperBody
+from app.models.pubmed import PubMedSearchBody
 from app.services.conference import analyze_conference
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
+from app.services.pubmed import search_pubmed
+
+
+def _extract_requested_limit(text: str, default: int = 10) -> int:
+    match = re.search(r"\bfirst\s+(\d{1,2})\b|\btop\s+(\d{1,2})\b", text, flags=re.IGNORECASE)
+    if not match:
+        return default
+    return max(1, min(25, int(next(value for value in match.groups() if value))))
+
+
+def _format_pubmed_mock_reply(data: dict[str, Any]) -> str:
+    articles = data.get("articles", [])
+    lines = [
+        f"Mock mode PubMed summary for query: {data.get('query')}",
+        f"Returned {data.get('returnedResults')} of {data.get('totalResults')} PubMed results.",
+        "",
+    ]
+    for index, article in enumerate(articles, start=1):
+        abstract = article.get("abstract") or "No abstract available."
+        summary = abstract[:240].rstrip() + ("..." if len(abstract) > 240 else "")
+        lines.append(f"{index}. {article.get('title')} ({article.get('pubDate') or 'date unknown'}, PMID {article.get('pmid')})")
+        lines.append(f"   {summary}")
+    lines.extend(
+        [
+            "",
+            "Limitations: this mock-mode response uses PubMed metadata and abstract snippets only, not full-text papers or OpenAI reasoning.",
+        ]
+    )
+    return "\n".join(lines)
+
 
 def _extract_message_token_usage(message: BaseMessage) -> tuple[int, int]:
     usage_metadata = getattr(message, "usage_metadata", None) or {}
@@ -100,12 +132,21 @@ async def analyze_conference_tool(
     return result.model_dump(mode="json", by_alias=True)
 
 
+@tool
+async def search_pubmed_tool(query_or_url: str, limit: int = 10, sort: str = "relevance") -> dict[str, Any]:
+    """Search PubMed or read a PubMed search URL, returning article metadata and abstracts for comparison or summary."""
+
+    result = await search_pubmed(PubMedSearchBody(query=query_or_url, limit=limit, sort=sort))
+    return result.model_dump(mode="json", by_alias=True)
+
+
 AGENT_TOOLS = [
     summarize_paper_tool,
     extract_paper_tool,
     read_pdf_article_tool,
     compare_pdf_articles_tool,
     analyze_conference_tool,
+    search_pubmed_tool,
 ]
 
 
@@ -139,6 +180,14 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
 
 async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
     system_prompt, _history, last_user = _extract_agent_inputs(body)
+    if "pubmed" in last_user.lower():
+        result = await search_pubmed(PubMedSearchBody(query=last_user, limit=_extract_requested_limit(last_user)))
+        return AgentChatData(
+            reply=_format_pubmed_mock_reply(result.model_dump(mode="json", by_alias=True)),
+            provider="mock",
+            toolsUsed=["search_pubmed_tool"],
+        )
+
     return AgentChatData(
         reply=(
             f"Hello, mock agent mode is enabled. I am using the system prompt: {system_prompt[:120]}..."
