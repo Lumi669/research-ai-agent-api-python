@@ -182,7 +182,22 @@ async def analyze_conference_tool(
 async def search_pubmed_tool(query_or_url: str, limit: int = 10, sort: str = "relevance") -> dict[str, Any]:
     """Search PubMed or read a PubMed search URL, returning article metadata and abstracts for comparison or summary."""
 
-    result = await search_pubmed(PubMedSearchBody(query=query_or_url, limit=limit, sort=sort))
+    try:
+        result = await search_pubmed(PubMedSearchBody(query=query_or_url, limit=limit, sort=sort))
+    except AppError as exc:
+        if exc.status_code != 429:
+            raise
+        return {
+            "query": query_or_url,
+            "totalResults": 0,
+            "returnedResults": 0,
+            "articles": [],
+            "limitations": [
+                "PubMed is temporarily rate limiting requests.",
+                "For follow-up questions, answer from the papers already present in the conversation when possible.",
+            ],
+            "error": exc.message,
+        }
     return result.model_dump(mode="json", by_alias=True)
 
 

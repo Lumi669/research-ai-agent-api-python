@@ -1,5 +1,7 @@
+import asyncio
 import json
 import re
+import time
 import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, unquote_plus, urlparse
 
@@ -12,6 +14,25 @@ PUBMED_ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi
 PUBMED_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 PUBMED_ARTICLE_URL = "https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 PUBMED_MAX_LIMIT = 25
+PUBMED_CACHE_TTL_SECONDS = 600
+PUBMED_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+_pubmed_search_cache: dict[tuple[str, int, str], tuple[float, PubMedSearchData]] = {}
+
+
+def _get_cached_pubmed_search(key: tuple[str, int, str]) -> PubMedSearchData | None:
+    cached = _pubmed_search_cache.get(key)
+    if not cached:
+        return None
+    cached_at, data = cached
+    if time.monotonic() - cached_at > PUBMED_CACHE_TTL_SECONDS:
+        _pubmed_search_cache.pop(key, None)
+        return None
+    return data.model_copy(deep=True)
+
+
+def _cache_pubmed_search(key: tuple[str, int, str], data: PubMedSearchData) -> PubMedSearchData:
+    _pubmed_search_cache[key] = (time.monotonic(), data.model_copy(deep=True))
+    return data
 
 
 def _query_from_input(value: str) -> str:
@@ -116,15 +137,28 @@ def _parse_pubmed_articles(xml_text: str) -> list[PubMedArticle]:
 async def search_pubmed(body: PubMedSearchBody) -> PubMedSearchData:
     query = _query_from_input(body.query)
     limit = min(body.limit, PUBMED_MAX_LIMIT)
+    cache_key = (query.lower(), limit, body.sort.lower())
+    cached = _get_cached_pubmed_search(cache_key)
+    if cached:
+        cached.limitations.append("Returned from the local PubMed cache to avoid repeating the same remote request.")
+        return cached
+
     headers = {"user-agent": "ResearchAIAgentAPI/0.1 (+pubmed-search)"}
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
-        try:
-            search_response = await client.get(
-                PUBMED_ESEARCH_URL,
-                params={"db": "pubmed", "term": query, "retmode": "json", "retmax": limit, "sort": body.sort},
-            )
-        except Exception as exc:
-            raise AppError(502, f"Failed to search PubMed: {exc}") from exc
+        for attempt in range(len(PUBMED_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                search_response = await client.get(
+                    PUBMED_ESEARCH_URL,
+                    params={"db": "pubmed", "term": query, "retmode": "json", "retmax": limit, "sort": body.sort},
+                )
+            except Exception as exc:
+                raise AppError(502, f"Failed to search PubMed: {exc}") from exc
+
+            if search_response.status_code != 429:
+                break
+            if attempt >= len(PUBMED_RETRY_DELAYS_SECONDS):
+                raise AppError(429, "PubMed is rate limiting requests. Please wait a moment and try again.")
+            await asyncio.sleep(PUBMED_RETRY_DELAYS_SECONDS[attempt])
 
         if search_response.status_code >= 400:
             raise AppError(502, f"Failed to search PubMed: HTTP {search_response.status_code}")
@@ -138,12 +172,15 @@ async def search_pubmed(body: PubMedSearchBody) -> PubMedSearchData:
         ids = [str(value) for value in result.get("idlist", [])]
         total_results = int(result.get("count") or 0)
         if not ids:
-            return PubMedSearchData(
-                query=query,
-                totalResults=total_results,
-                returnedResults=0,
-                articles=[],
-                limitations=["No PubMed records were returned for this query."],
+            return _cache_pubmed_search(
+                cache_key,
+                PubMedSearchData(
+                    query=query,
+                    totalResults=total_results,
+                    returnedResults=0,
+                    articles=[],
+                    limitations=["No PubMed records were returned for this query."],
+                ),
             )
 
         try:
@@ -162,10 +199,13 @@ async def search_pubmed(body: PubMedSearchBody) -> PubMedSearchData:
         "Results come from PubMed metadata and abstracts, not full-text articles.",
         "The first results may include reviews, editorials, or records without abstracts.",
     ]
-    return PubMedSearchData(
-        query=query,
-        totalResults=total_results,
-        returnedResults=len(articles),
-        articles=articles,
-        limitations=limitations,
+    return _cache_pubmed_search(
+        cache_key,
+        PubMedSearchData(
+            query=query,
+            totalResults=total_results,
+            returnedResults=len(articles),
+            articles=articles,
+            limitations=limitations,
+        ),
     )

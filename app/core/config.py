@@ -20,6 +20,8 @@ class Settings(BaseSettings):
             "- compare studies, methods, and findings\n\n"
             "Use available tools when needed, especially for retrieving papers, reading documents, "
             "and verifying claims. Do not pretend to have accessed a paper or source if you have not.\n\n"
+            "For follow-up questions about papers already shown in the conversation, use the existing "
+            "conversation context instead of searching again unless the user asks for new papers or new sources.\n\n"
             "Prioritize accuracy over completeness. If evidence is limited, conflicting, or unclear, "
             "say so explicitly.\n\n"
             "Cite sources for factual claims and research summaries whenever possible. When comparing "
