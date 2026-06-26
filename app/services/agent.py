@@ -9,10 +9,12 @@ from langchain_openai import ChatOpenAI
 from app.core.config import settings
 from app.core.errors import AppError
 from app.models.agent import AgentChatBody, AgentChatData
+from app.models.arxiv import ArxivSearchBody
 from app.models.conferences import AnalyzeConferenceBody
 from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, SummarizePaperBody
 from app.models.pubmed import PubMedSearchBody
 from app.services.conference import analyze_conference
+from app.services.arxiv import search_arxiv
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
 from app.services.pubmed import search_pubmed
@@ -41,6 +43,27 @@ def _format_pubmed_mock_reply(data: dict[str, Any]) -> str:
         [
             "",
             "Limitations: this mock-mode response uses PubMed metadata and abstract snippets only, not full-text papers or OpenAI reasoning.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_arxiv_mock_reply(data: dict[str, Any]) -> str:
+    articles = data.get("articles", [])
+    lines = [
+        f"Mock mode arXiv summary for query: {data.get('query')}",
+        f"Returned {data.get('returnedResults')} of {data.get('totalResults')} arXiv results.",
+        "",
+    ]
+    for index, article in enumerate(articles, start=1):
+        abstract = article.get("abstract") or "No abstract available."
+        summary = abstract[:240].rstrip() + ("..." if len(abstract) > 240 else "")
+        lines.append(f"{index}. {article.get('title')} ({article.get('published') or 'date unknown'}, {article.get('arxivId')})")
+        lines.append(f"   {summary}")
+    lines.extend(
+        [
+            "",
+            "Limitations: this mock-mode response uses arXiv metadata and abstract snippets only, not full-text PDFs or OpenAI reasoning.",
         ]
     )
     return "\n".join(lines)
@@ -140,6 +163,19 @@ async def search_pubmed_tool(query_or_url: str, limit: int = 10, sort: str = "re
     return result.model_dump(mode="json", by_alias=True)
 
 
+@tool
+async def search_arxiv_tool(
+    query_or_url: str,
+    limit: int = 10,
+    sort_by: str = "submittedDate",
+    sort_order: str = "descending",
+) -> dict[str, Any]:
+    """Search arXiv or read an arXiv search URL, returning article metadata, abstracts, and PDF links."""
+
+    result = await search_arxiv(ArxivSearchBody(query=query_or_url, limit=limit, sortBy=sort_by, sortOrder=sort_order))
+    return result.model_dump(mode="json", by_alias=True)
+
+
 AGENT_TOOLS = [
     summarize_paper_tool,
     extract_paper_tool,
@@ -147,6 +183,7 @@ AGENT_TOOLS = [
     compare_pdf_articles_tool,
     analyze_conference_tool,
     search_pubmed_tool,
+    search_arxiv_tool,
 ]
 
 
@@ -186,6 +223,13 @@ async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
             reply=_format_pubmed_mock_reply(result.model_dump(mode="json", by_alias=True)),
             provider="mock",
             toolsUsed=["search_pubmed_tool"],
+        )
+    if "arxiv" in last_user.lower():
+        result = await search_arxiv(ArxivSearchBody(query=last_user, limit=_extract_requested_limit(last_user)))
+        return AgentChatData(
+            reply=_format_arxiv_mock_reply(result.model_dump(mode="json", by_alias=True)),
+            provider="mock",
+            toolsUsed=["search_arxiv_tool"],
         )
 
     return AgentChatData(

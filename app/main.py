@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.api.routes.arxiv import router as arxiv_router
 from app.api.routes.agent import router as agent_router
 from app.api.routes.conferences import router as conferences_router
 from app.api.routes.conversations import router as conversations_router
@@ -42,6 +43,7 @@ async def log_startup_configuration() -> None:
 app.include_router(health_router)
 app.include_router(playground_router)
 app.include_router(agent_router)
+app.include_router(arxiv_router)
 app.include_router(conversations_router)
 app.include_router(papers_router)
 app.include_router(conferences_router)
