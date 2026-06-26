@@ -1,5 +1,6 @@
 from io import BytesIO
 import re
+from urllib.parse import urlparse
 
 import httpx
 from pypdf import PdfReader
@@ -18,7 +19,16 @@ def _split_keywords(raw: str | None) -> list[str]:
     return [part.strip() for part in re.split(r"[;,]", raw) if part.strip()][:20]
 
 
+def _normalize_pdf_url(pdf_url: str) -> str:
+    parsed = urlparse(pdf_url)
+    if "openaccess.thecvf.com" in parsed.netloc and "/html/" in parsed.path and parsed.path.endswith("_paper.html"):
+        pdf_path = parsed.path.replace("/html/", "/papers/").replace("_paper.html", "_paper.pdf")
+        return f"{parsed.scheme}://{parsed.netloc}{pdf_path}"
+    return pdf_url
+
+
 async def read_pdf_article(pdf_url: str, title: str | None = None, max_chars: int = 20_000) -> ReadPdfArticleData:
+    pdf_url = _normalize_pdf_url(pdf_url)
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
         response = await client.get(pdf_url)
     if response.status_code >= 400:

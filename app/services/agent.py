@@ -11,10 +11,12 @@ from app.core.errors import AppError
 from app.models.agent import AgentChatBody, AgentChatData
 from app.models.arxiv import ArxivSearchBody
 from app.models.conferences import AnalyzeConferenceBody
+from app.models.cvf import CVFSearchBody
 from app.models.papers import ComparePdfArticlesBody, ExtractPaperBody, SummarizePaperBody
 from app.models.pubmed import PubMedSearchBody
 from app.services.conference import analyze_conference
 from app.services.arxiv import search_arxiv
+from app.services.cvf import search_cvf
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
 from app.services.pubmed import search_pubmed
@@ -64,6 +66,27 @@ def _format_arxiv_mock_reply(data: dict[str, Any]) -> str:
         [
             "",
             "Limitations: this mock-mode response uses arXiv metadata and abstract snippets only, not full-text PDFs or OpenAI reasoning.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_cvf_mock_reply(data: dict[str, Any]) -> str:
+    papers = data.get("papers", [])
+    lines = [
+        f"Mock mode {data.get('conference') or 'CVF'} summary for: {data.get('sourceUrl')}",
+        f"Returned {data.get('returnedResults')} of {data.get('totalResults')} papers.",
+        "",
+    ]
+    for index, paper in enumerate(papers, start=1):
+        abstract = paper.get("abstract") or "No abstract available."
+        summary = abstract[:240].rstrip() + ("..." if len(abstract) > 240 else "")
+        lines.append(f"{index}. {paper.get('title')} ({paper.get('eventType') or 'event type unknown'}, {paper.get('id')})")
+        lines.append(f"   {summary}")
+    lines.extend(
+        [
+            "",
+            "Limitations: this mock-mode response uses CVF metadata and abstract snippets only, not full OpenAccess paper text or OpenAI reasoning.",
         ]
     )
     return "\n".join(lines)
@@ -176,6 +199,14 @@ async def search_arxiv_tool(
     return result.model_dump(mode="json", by_alias=True)
 
 
+@tool
+async def search_cvf_tool(source_url: str, query: str | None = None, limit: int = 10) -> dict[str, Any]:
+    """Search a CVF/CVPR virtual papers page, returning paper metadata, abstracts, and derived OpenAccess PDF links."""
+
+    result = await search_cvf(CVFSearchBody(sourceUrl=source_url, query=query, limit=limit))
+    return result.model_dump(mode="json", by_alias=True)
+
+
 AGENT_TOOLS = [
     summarize_paper_tool,
     extract_paper_tool,
@@ -184,6 +215,7 @@ AGENT_TOOLS = [
     analyze_conference_tool,
     search_pubmed_tool,
     search_arxiv_tool,
+    search_cvf_tool,
 ]
 
 
@@ -230,6 +262,15 @@ async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
             reply=_format_arxiv_mock_reply(result.model_dump(mode="json", by_alias=True)),
             provider="mock",
             toolsUsed=["search_arxiv_tool"],
+        )
+    if "thecvf.com" in last_user.lower() or "cvpr" in last_user.lower():
+        source_url_match = re.search(r"https?://[^\s,;]+", last_user)
+        source_url = source_url_match.group(0) if source_url_match else last_user
+        result = await search_cvf(CVFSearchBody(sourceUrl=source_url, limit=_extract_requested_limit(last_user)))
+        return AgentChatData(
+            reply=_format_cvf_mock_reply(result.model_dump(mode="json", by_alias=True)),
+            provider="mock",
+            toolsUsed=["search_cvf_tool"],
         )
 
     return AgentChatData(

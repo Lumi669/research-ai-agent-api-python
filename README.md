@@ -14,6 +14,7 @@ FastAPI port of the research AI agent API. This service is designed to be consum
 - `POST /v1/conferences/analyze`
 - `POST /v1/conferences/analyze/jobs`
 - `GET /v1/conferences/analyze/jobs/{job_id}`
+- `POST /v1/cvf/search`
 - `POST /v1/agent/chat`
 - `POST /v1/conversations`
 - `GET /v1/conversations`
@@ -105,6 +106,7 @@ uvicorn app.main:app --reload --port 8000
   Frontends should prefer rendering `message.parts` by type, especially `text`, `table`, `image`, and `file`.
 - `/v1/uploads/presign` returns presigned S3 upload URLs and attachment parts that can be stored in DynamoDB-backed messages.
 - `/v1/arxiv/search` fetches arXiv metadata, abstracts, and PDF links for research-result summaries and comparisons.
+- `/v1/cvf/search` fetches CVF/CVPR virtual conference metadata, abstracts, and derived OpenAccess PDF links.
 - `/v1/pubmed/search` fetches PubMed metadata and abstracts for research-result summaries and comparisons.
 - `/playground` provides a small local UI for testing conversation creation plus image/file uploads through the presign flow.
 - `OPENAI_MODEL` defaults to `gpt-5.4-mini`.

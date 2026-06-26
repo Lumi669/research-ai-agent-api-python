@@ -7,6 +7,7 @@ from app.api.routes.arxiv import router as arxiv_router
 from app.api.routes.agent import router as agent_router
 from app.api.routes.conferences import router as conferences_router
 from app.api.routes.conversations import router as conversations_router
+from app.api.routes.cvf import router as cvf_router
 from app.api.routes.health import router as health_router
 from app.api.routes.papers import router as papers_router
 from app.api.routes.playground import router as playground_router
@@ -45,6 +46,7 @@ app.include_router(playground_router)
 app.include_router(agent_router)
 app.include_router(arxiv_router)
 app.include_router(conversations_router)
+app.include_router(cvf_router)
 app.include_router(papers_router)
 app.include_router(conferences_router)
 app.include_router(pubmed_router)
