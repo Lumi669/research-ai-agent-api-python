@@ -273,6 +273,13 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
     .status-item.error { border-left: 4px solid var(--danger); }
     .status-item.info { border-left: 4px solid var(--accent); }
 
+    .current-progress {
+      min-height: 22px;
+      margin-top: 12px;
+      color: var(--accent);
+      font-weight: 700;
+    }
+
     .muted { color: var(--muted); font-size: 0.92rem; }
 
     @media (max-width: 640px) {
@@ -352,6 +359,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
           <button class="secondary" id="cancelRequest" disabled>Stop</button>
           <button class="secondary" id="clearComposer">Clear</button>
         </div>
+        <div class="current-progress" id="currentProgress" aria-live="polite"></div>
       </div>
     </section>
 
@@ -379,6 +387,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       isProcessing: false,
       abortController: null,
       activeJobId: null,
+      activeJobProgressCount: 0,
     };
 
     const baseUrlInput = document.getElementById("baseUrl");
@@ -396,6 +405,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
     const sendMessageButton = document.getElementById("sendMessage");
     const cancelRequestButton = document.getElementById("cancelRequest");
     const clearComposerButton = document.getElementById("clearComposer");
+    const currentProgress = document.getElementById("currentProgress");
 
     baseUrlInput.value = window.location.origin;
 
@@ -424,12 +434,23 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       statusLog.prepend(item);
     }
 
+    function showCurrentProgress(message) {
+      // Display app-generated lifecycle progress only; this never contains LLM reasoning.
+      currentProgress.textContent = message || "";
+      if (message && state.isProcessing) {
+        sendMessageButton.textContent = message.replace(/\\.+$/, "...");
+      }
+    }
+
     function updateComposerControls() {
       const canEditComposer = !state.isProcessing;
       messageTextInput.disabled = !canEditComposer;
       attachmentsInput.disabled = !canEditComposer;
       clearComposerButton.disabled = !canEditComposer;
       sendMessageButton.disabled = state.isProcessing;
+      if (!state.isProcessing) {
+        sendMessageButton.textContent = "Upload And Send";
+      }
       cancelRequestButton.disabled = !state.isProcessing;
       createConversationButton.disabled = state.isProcessing;
       refreshConversationButton.disabled = state.isProcessing;
@@ -438,6 +459,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
     function beginProcessing() {
       state.isProcessing = true;
       state.abortController = new AbortController();
+      showCurrentProgress("Sending request...");
       updateComposerControls();
       return state.abortController.signal;
     }
@@ -446,6 +468,8 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
       state.isProcessing = false;
       state.abortController = null;
       state.activeJobId = null;
+      state.activeJobProgressCount = 0;
+      showCurrentProgress("");
       updateComposerControls();
     }
 
@@ -671,6 +695,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
           }),
         });
         state.activeJobId = jobResponse.data.jobId;
+        state.activeJobProgressCount = 0;
         logStatus("info", `Assistant job started: ${state.activeJobId}`);
         logStatus("info", "Waiting for the assistant response...");
 
@@ -691,6 +716,13 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
               signal,
             },
           );
+          // These progress messages come from backend job lifecycle events, not from LLM reasoning.
+          const progress = jobStatus.data.progress || [];
+          progress.slice(state.activeJobProgressCount).forEach((message) => {
+            logStatus("info", message);
+            showCurrentProgress(message);
+          });
+          state.activeJobProgressCount = progress.length;
           const status = jobStatus.data.status;
           if (status === "queued" || status === "running") {
             continue;

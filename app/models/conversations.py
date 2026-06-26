@@ -51,6 +51,7 @@ class ConversationMessageJob(BaseModel):
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
     request: PostConversationMessageBody
+    progress: list[str] = Field(default_factory=list)
     result: PostConversationMessageData | None = None
     error: str | None = None
 
