@@ -69,18 +69,28 @@ def _extract_query(source_url: str, explicit_query: str | None) -> str | None:
     return None
 
 
-def _matches_query(item: dict[str, object], abstract: str | None, query: str | None) -> bool:
+def _query_score(item: dict[str, object], abstract: str | None, query: str | None) -> int:
     if not query:
-        return True
-    haystack = " ".join(
-        [
-            _normalize_text(item.get("name")),
-            " ".join(_normalize_text(keyword) for keyword in item.get("keywords", []) if keyword),
-            " ".join(_normalize_text(author.get("fullname")) for author in item.get("authors", []) if isinstance(author, dict)),
-            _normalize_text(abstract),
-        ]
-    ).lower()
-    return all(token in haystack for token in query.lower().split())
+        return 1
+
+    normalized_query = query.lower().strip()
+    title = _normalize_text(item.get("name")).lower()
+    keywords = " ".join(_normalize_text(keyword) for keyword in item.get("keywords", []) if keyword).lower()
+    authors = " ".join(_normalize_text(author.get("fullname")) for author in item.get("authors", []) if isinstance(author, dict)).lower()
+    abstract_text = _normalize_text(abstract).lower()
+    haystack = " ".join([title, keywords, authors, abstract_text])
+    tokens = normalized_query.split()
+    if not all(token in haystack for token in tokens):
+        return 0
+
+    score = 10
+    if normalized_query in title:
+        score += 100
+    if normalized_query in keywords:
+        score += 80
+    if normalized_query in abstract_text:
+        score += 50
+    return score
 
 
 def _derive_pdf_url(paper_url: str | None) -> str | None:
@@ -106,6 +116,15 @@ async def _fetch_json(client: httpx.AsyncClient, url: str) -> object:
         return response.json()
     except json.JSONDecodeError as exc:
         raise AppError(502, f"CVF returned invalid JSON from {url}.") from exc
+
+
+async def _fetch_optional_json(client: httpx.AsyncClient, url: str) -> object | None:
+    try:
+        return await _fetch_json(client, url)
+    except AppError as exc:
+        if "HTTP 404" in exc.message:
+            return None
+        raise
 
 
 def _paper_from_item(item: dict[str, object], abstract: str | None, source_url: str) -> CVFPaper:
@@ -137,25 +156,36 @@ async def search_cvf(body: CVFSearchBody) -> CVFSearchData:
 
     headers = {"user-agent": "ResearchAIAgentAPI/0.1 (+cvf-search)"}
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
-        papers_payload, abstracts_payload = await _fetch_json(client, papers_url), await _fetch_json(client, abstracts_url)
+        papers_payload = await _fetch_json(client, papers_url)
+        abstracts_payload = await _fetch_optional_json(client, abstracts_url)
 
     if not isinstance(papers_payload, dict) or not isinstance(papers_payload.get("results"), list):
         raise AppError(502, "CVF papers JSON did not contain a results list.")
     abstracts = abstracts_payload if isinstance(abstracts_payload, dict) else {}
     limit = min(body.limit, CVF_MAX_LIMIT)
 
-    matched: list[CVFPaper] = []
-    for item in papers_payload["results"]:
+    scored_matches: list[tuple[int, int, CVFPaper]] = []
+    for index, item in enumerate(papers_payload["results"]):
         if not isinstance(item, dict):
             continue
         item_id = str(item.get("id") or "")
         source_id = str(item.get("sourceid") or "")
         abstract = _normalize_text(abstracts.get(item_id) or abstracts.get(source_id)) or None
-        if not _matches_query(item, abstract, query):
+        score = _query_score(item, abstract, query)
+        if score <= 0:
             continue
-        matched.append(_paper_from_item(item, abstract, source_url))
-        if len(matched) >= limit:
-            break
+        scored_matches.append((score, index, _paper_from_item(item, abstract, source_url)))
+
+    if query:
+        scored_matches.sort(key=lambda match: (-match[0], match[1]))
+    matched = [paper for _score, _index, paper in scored_matches[:limit]]
+
+    limitations = [
+        "Results come from CVF virtual conference metadata and abstracts, not necessarily full-text papers.",
+        "PDF URLs are derived from CVF OpenAccess HTML links when possible.",
+    ]
+    if abstracts_payload is None:
+        limitations.append("CVF abstracts JSON was unavailable for this year, so matching used titles, keywords, and authors only.")
 
     return CVFSearchData(
         conference=_conference_from_url(source_url, year),
@@ -164,8 +194,5 @@ async def search_cvf(body: CVFSearchBody) -> CVFSearchData:
         totalResults=int(papers_payload.get("count") or len(papers_payload["results"])),
         returnedResults=len(matched),
         papers=matched,
-        limitations=[
-            "Results come from CVF virtual conference metadata and abstracts, not necessarily full-text papers.",
-            "PDF URLs are derived from CVF OpenAccess HTML links when possible.",
-        ],
+        limitations=limitations,
     )
