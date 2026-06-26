@@ -23,7 +23,7 @@ from app.services.pubmed import search_pubmed
 
 
 def _extract_requested_limit(text: str, default: int = 10) -> int:
-    match = re.search(r"\bfirst\s+(\d{1,2})\b|\btop\s+(\d{1,2})\b", text, flags=re.IGNORECASE)
+    match = re.search(r"\bfirst\s+(\d{1,2})\b|\btop\s+(\d{1,2})\b|\blatest\s+(\d{1,2})\b", text, flags=re.IGNORECASE)
     if not match:
         return default
     return max(1, min(25, int(next(value for value in match.groups() if value))))

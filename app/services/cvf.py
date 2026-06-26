@@ -9,6 +9,7 @@ from app.models.cvf import CVFPaper, CVFSearchBody, CVFSearchData
 
 CVF_MAX_LIMIT = 25
 CVF_DEFAULT_HOST = "https://cvpr.thecvf.com"
+CVF_DEFAULT_YEAR = "2026"
 
 
 def _normalize_text(value: object) -> str:
@@ -17,14 +18,27 @@ def _normalize_text(value: object) -> str:
 
 def _extract_year(source_url: str) -> str:
     match = re.search(r"/virtual/(\d{4})/", source_url)
-    if not match:
-        raise AppError(422, "Only CVF virtual paper URLs like /virtual/2026/papers.html are supported.")
-    return match.group(1)
+    if match:
+        return match.group(1)
+    if "cvpr" in source_url.lower() or "cvf" in source_url.lower():
+        return CVF_DEFAULT_YEAR
+    raise AppError(422, "Only CVF virtual paper URLs or CVPR/CVF natural-language prompts are supported.")
+
+
+def _source_url_from_input(value: str, year: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        if "/virtual/" not in parsed.path and ("thecvf.com" in parsed.netloc or "openaccess" in parsed.netloc):
+            return f"{CVF_DEFAULT_HOST}/virtual/{year}/papers.html"
+        return value
+    if "cvpr" in value.lower() or "cvf" in value.lower():
+        return f"{CVF_DEFAULT_HOST}/virtual/{year}/papers.html"
+    return value
 
 
 def _conference_from_url(source_url: str, year: str) -> str:
     host = urlparse(source_url).netloc.lower()
-    if "cvpr" in host:
+    if "cvpr" in host or "cvpr" in source_url.lower():
         return f"CVPR {year}"
     return f"CVF {year}"
 
@@ -42,12 +56,17 @@ def _extract_query(source_url: str, explicit_query: str | None) -> str | None:
     if explicit_query and explicit_query.strip():
         return explicit_query.strip()
     match = re.search(r"[?&]search=([^&]*)", source_url)
-    if not match:
-        return None
-    from urllib.parse import unquote_plus
+    if match:
+        from urllib.parse import unquote_plus
 
-    query = unquote_plus(match.group(1)).strip()
-    return query or None
+        query = unquote_plus(match.group(1)).strip()
+        return query or None
+    about_match = re.search(r"\babout\s+(.+?)(?:[.?!]|$)", source_url, flags=re.IGNORECASE)
+    if about_match:
+        query = re.sub(r"\b(first|latest|top)\s+\d+\s+papers?\b", " ", about_match.group(1), flags=re.IGNORECASE)
+        query = re.sub(r"\bin\s+cvpr\b|\bcvpr\b|\bpapers?\b", " ", query, flags=re.IGNORECASE)
+        return _normalize_text(query) or None
+    return None
 
 
 def _matches_query(item: dict[str, object], abstract: str | None, query: str | None) -> bool:
@@ -108,9 +127,12 @@ def _paper_from_item(item: dict[str, object], abstract: str | None, source_url: 
 
 
 async def search_cvf(body: CVFSearchBody) -> CVFSearchData:
-    source_url = body.source_url
-    year = _extract_year(source_url)
+    raw_source_url = body.source_url
+    year = _extract_year(raw_source_url)
+    source_url = _source_url_from_input(raw_source_url, year)
     query = _extract_query(source_url, body.query)
+    if query is None:
+        query = _extract_query(raw_source_url, body.query)
     papers_url, abstracts_url = _data_urls(source_url)
 
     headers = {"user-agent": "ResearchAIAgentAPI/0.1 (+cvf-search)"}
