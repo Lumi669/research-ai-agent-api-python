@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 
+from app.core.trace import trace_call
 from app.core.security import require_internal_api_key
 from app.models.conversations import CreateConversationBody, PostConversationMessageBody, UpdateConversationBody
 from app.services.conversations import (
@@ -48,7 +49,8 @@ async def post_message_to_conversation(
     conversation_id: str,
     body: PostConversationMessageBody,
 ) -> dict:
-    return {"success": True, "data": await post_conversation_message(conversation_id, body.content, body.parts)}
+    with trace_call("post_message_to_conversation", "FastAPI direct chat endpoint"):
+        return {"success": True, "data": await post_conversation_message(conversation_id, body.content, body.parts)}
 
 
 @router.post("/{conversation_id}/messages/jobs", status_code=202)
@@ -56,12 +58,14 @@ async def post_message_job_to_conversation(
     conversation_id: str,
     body: PostConversationMessageBody,
 ) -> dict:
-    return {"success": True, "data": create_conversation_message_job(conversation_id, body)}
+    with trace_call("post_message_job_to_conversation", "FastAPI async chat job endpoint"):
+        return {"success": True, "data": create_conversation_message_job(conversation_id, body)}
 
 
 @router.get("/{conversation_id}/messages/jobs/{job_id}")
 async def get_message_job_for_conversation(conversation_id: str, job_id: str) -> dict:
-    return {"success": True, "data": get_conversation_message_job(conversation_id, job_id)}
+    with trace_call("get_message_job_for_conversation", "FastAPI poll chat job endpoint"):
+        return {"success": True, "data": get_conversation_message_job(conversation_id, job_id)}
 
 
 @router.post("/{conversation_id}/messages/jobs/{job_id}/cancel")

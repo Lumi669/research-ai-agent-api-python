@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.trace import result_size, trace_call, trace_event
 from app.models.agent import AgentChatBody, AgentChatData
 from app.models.arxiv import ArxivSearchBody
 from app.models.conferences import AnalyzeConferenceBody
@@ -112,24 +113,33 @@ def _extract_message_token_usage(message: BaseMessage) -> tuple[int, int]:
 async def summarize_paper_tool(text: str, title: str | None = None, mode: str = "standard") -> dict[str, Any]:
     """Summarize one academic paper or excerpt into structured research notes."""
 
-    result = await summarize_paper(SummarizePaperBody(title=title, text=text, mode=mode))
-    return result.model_dump(mode="json", by_alias=True)
+    with trace_call("summarize_paper_tool", "LangChain tool: summarize one paper"):
+        trace_event("tool=summarize_paper_tool")
+        result = await summarize_paper(SummarizePaperBody(title=title, text=text, mode=mode))
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
 async def extract_paper_tool(text: str, title: str | None = None) -> dict[str, Any]:
     """Extract keywords, datasets, metrics, and limitations from a paper excerpt."""
 
-    result = await extract_paper(ExtractPaperBody(title=title, text=text))
-    return result.model_dump(mode="json", by_alias=True)
+    with trace_call("extract_paper_tool", "LangChain tool: extract paper metadata"):
+        trace_event("tool=extract_paper_tool")
+        result = await extract_paper(ExtractPaperBody(title=title, text=text))
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
 async def read_pdf_article_tool(pdf_url: str, title: str | None = None, max_chars: int = 20_000) -> dict[str, Any]:
     """Fetch a PDF article by URL and extract readable text plus metadata."""
 
-    result = await read_pdf_article(pdf_url=pdf_url, title=title, max_chars=max_chars)
-    return result.model_dump(mode="json", by_alias=True)
+    with trace_call("read_pdf_article_tool", "LangChain tool: read PDF article"):
+        trace_event("tool=read_pdf_article_tool")
+        result = await read_pdf_article(pdf_url=pdf_url, title=title, max_chars=max_chars)
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
@@ -144,16 +154,19 @@ async def compare_pdf_articles_tool(
 ) -> dict[str, Any]:
     """Read two PDF articles and compare them for similarities and differences."""
 
-    result = await compare_pdf_articles(
-        ComparePdfArticlesBody(
-            left={"title": left_title, "pdfUrl": left_pdf_url},
-            right={"title": right_title, "pdfUrl": right_pdf_url},
-            focus=focus,
-            mode=mode,
-            maxCharsPerPaper=max_chars_per_paper,
+    with trace_call("compare_pdf_articles_tool", "LangChain tool: compare two PDF articles"):
+        trace_event("tool=compare_pdf_articles_tool")
+        result = await compare_pdf_articles(
+            ComparePdfArticlesBody(
+                left={"title": left_title, "pdfUrl": left_pdf_url},
+                right={"title": right_title, "pdfUrl": right_pdf_url},
+                focus=focus,
+                mode=mode,
+                maxCharsPerPaper=max_chars_per_paper,
+            )
         )
-    )
-    return result.model_dump(mode="json", by_alias=True)
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
@@ -166,39 +179,47 @@ async def analyze_conference_tool(
 ) -> dict[str, Any]:
     """Fetch a conference accepted-papers page and synthesize cross-paper findings."""
 
-    result = await analyze_conference(
-        AnalyzeConferenceBody(
-            conference=conference,
-            sourceUrl=source_url,
-            mode=mode,
-            maxPapers=max_papers,
-            maxPaperChars=max_paper_chars,
+    with trace_call("analyze_conference_tool", "LangChain tool: analyze conference page"):
+        trace_event("tool=analyze_conference_tool")
+        result = await analyze_conference(
+            AnalyzeConferenceBody(
+                conference=conference,
+                sourceUrl=source_url,
+                mode=mode,
+                maxPapers=max_papers,
+                maxPaperChars=max_paper_chars,
+            )
         )
-    )
-    return result.model_dump(mode="json", by_alias=True)
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
 async def search_pubmed_tool(query_or_url: str, limit: int = 10, sort: str = "relevance") -> dict[str, Any]:
     """Search PubMed or read a PubMed search URL, returning article metadata and abstracts for comparison or summary."""
 
-    try:
-        result = await search_pubmed(PubMedSearchBody(query=query_or_url, limit=limit, sort=sort))
-    except AppError as exc:
-        if exc.status_code != 429:
-            raise
-        return {
-            "query": query_or_url,
-            "totalResults": 0,
-            "returnedResults": 0,
-            "articles": [],
-            "limitations": [
-                "PubMed is temporarily rate limiting requests.",
-                "For follow-up questions, answer from the papers already present in the conversation when possible.",
-            ],
-            "error": exc.message,
-        }
-    return result.model_dump(mode="json", by_alias=True)
+    with trace_call("search_pubmed_tool", "LangChain tool: search PubMed"):
+        trace_event("tool=search_pubmed_tool")
+        try:
+            result = await search_pubmed(PubMedSearchBody(query=query_or_url, limit=limit, sort=sort))
+        except AppError as exc:
+            if exc.status_code != 429:
+                raise
+            fallback = {
+                "query": query_or_url,
+                "totalResults": 0,
+                "returnedResults": 0,
+                "articles": [],
+                "limitations": [
+                    "PubMed is temporarily rate limiting requests.",
+                    "For follow-up questions, answer from the papers already present in the conversation when possible.",
+                ],
+                "error": exc.message,
+            }
+            trace_event(f"tool result: {result_size(fallback)}")
+            return fallback
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
@@ -210,16 +231,22 @@ async def search_arxiv_tool(
 ) -> dict[str, Any]:
     """Search arXiv or read an arXiv search URL, returning article metadata, abstracts, and PDF links."""
 
-    result = await search_arxiv(ArxivSearchBody(query=query_or_url, limit=limit, sortBy=sort_by, sortOrder=sort_order))
-    return result.model_dump(mode="json", by_alias=True)
+    with trace_call("search_arxiv_tool", "LangChain tool: search arXiv"):
+        trace_event("tool=search_arxiv_tool")
+        result = await search_arxiv(ArxivSearchBody(query=query_or_url, limit=limit, sortBy=sort_by, sortOrder=sort_order))
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 @tool
 async def search_cvf_tool(source_url: str, query: str | None = None, limit: int = 10) -> dict[str, Any]:
     """Search a CVF/CVPR virtual papers page, returning paper metadata, abstracts, and derived OpenAccess PDF links."""
 
-    result = await search_cvf(CVFSearchBody(sourceUrl=source_url, query=query, limit=limit))
-    return result.model_dump(mode="json", by_alias=True)
+    with trace_call("search_cvf_tool", "LangChain tool: search CVF/CVPR"):
+        trace_event("tool=search_cvf_tool")
+        result = await search_cvf(CVFSearchBody(sourceUrl=source_url, query=query, limit=limit))
+        trace_event(f"tool result: {result_size(result)}")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 AGENT_TOOLS = [
@@ -235,10 +262,12 @@ AGENT_TOOLS = [
 
 
 def _build_llm() -> ChatOpenAI:
-    if not settings.openai_api_key:
-        raise AppError(503, "OpenAI API key is not configured (OPENAI_API_KEY)")
+    with trace_call("_build_llm", "Configure ChatOpenAI client"):
+        if not settings.openai_api_key:
+            raise AppError(503, "OpenAI API key is not configured (OPENAI_API_KEY)")
 
-    return ChatOpenAI(model=settings.openai_model, temperature=0.1, api_key=settings.openai_api_key)
+        trace_event(f"model={settings.openai_model}")
+        return ChatOpenAI(model=settings.openai_model, temperature=0.1, api_key=settings.openai_api_key)
 
 
 def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], str]:
@@ -263,74 +292,88 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
 
 
 async def _run_mock_agent(body: AgentChatBody) -> AgentChatData:
-    system_prompt, _history, last_user = _extract_agent_inputs(body)
-    if "pubmed" in last_user.lower():
-        result = await search_pubmed(PubMedSearchBody(query=last_user, limit=_extract_requested_limit(last_user)))
-        return AgentChatData(
-            reply=_format_pubmed_mock_reply(result.model_dump(mode="json", by_alias=True)),
-            provider="mock",
-            toolsUsed=["search_pubmed_tool"],
-        )
-    if "arxiv" in last_user.lower():
-        result = await search_arxiv(ArxivSearchBody(query=last_user, limit=_extract_requested_limit(last_user)))
-        return AgentChatData(
-            reply=_format_arxiv_mock_reply(result.model_dump(mode="json", by_alias=True)),
-            provider="mock",
-            toolsUsed=["search_arxiv_tool"],
-        )
-    if "thecvf.com" in last_user.lower() or "cvpr" in last_user.lower():
-        source_url_match = re.search(r"https?://[^\s,;]+", last_user)
-        source_url = source_url_match.group(0) if source_url_match else last_user
-        result = await search_cvf(CVFSearchBody(sourceUrl=source_url, limit=_extract_requested_limit(last_user)))
-        return AgentChatData(
-            reply=_format_cvf_mock_reply(result.model_dump(mode="json", by_alias=True)),
-            provider="mock",
-            toolsUsed=["search_cvf_tool"],
-        )
+    with trace_call("_run_mock_agent", "Run local mock agent"):
+        system_prompt, _history, last_user = _extract_agent_inputs(body)
+        if "pubmed" in last_user.lower():
+            trace_event("tool=search_pubmed_mock")
+            result = await search_pubmed(PubMedSearchBody(query=last_user, limit=_extract_requested_limit(last_user)))
+            trace_event(f"tool result: {result_size(result)}")
+            return AgentChatData(
+                reply=_format_pubmed_mock_reply(result.model_dump(mode="json", by_alias=True)),
+                provider="mock",
+                toolsUsed=["search_pubmed_tool"],
+            )
+        if "arxiv" in last_user.lower():
+            trace_event("tool=search_arxiv_mock")
+            result = await search_arxiv(ArxivSearchBody(query=last_user, limit=_extract_requested_limit(last_user)))
+            trace_event(f"tool result: {result_size(result)}")
+            return AgentChatData(
+                reply=_format_arxiv_mock_reply(result.model_dump(mode="json", by_alias=True)),
+                provider="mock",
+                toolsUsed=["search_arxiv_tool"],
+            )
+        if "thecvf.com" in last_user.lower() or "cvpr" in last_user.lower():
+            trace_event("tool=search_cvf_mock")
+            source_url_match = re.search(r"https?://[^\s,;]+", last_user)
+            source_url = source_url_match.group(0) if source_url_match else last_user
+            result = await search_cvf(CVFSearchBody(sourceUrl=source_url, limit=_extract_requested_limit(last_user)))
+            trace_event(f"tool result: {result_size(result)}")
+            return AgentChatData(
+                reply=_format_cvf_mock_reply(result.model_dump(mode="json", by_alias=True)),
+                provider="mock",
+                toolsUsed=["search_cvf_tool"],
+            )
 
-    return AgentChatData(
-        reply=(
-            f"Hello, mock agent mode is enabled. I am using the system prompt: {system_prompt[:120]}..."
-            " I can summarize papers, analyze conference pages, and compare PDF articles once live model access is available."
-        ),
-        provider="mock",
-        toolsUsed=[],
-    )
+        return AgentChatData(
+            reply=(
+                f"Hello, mock agent mode is enabled. I am using the system prompt: {system_prompt[:120]}..."
+                " I can summarize papers, analyze conference pages, and compare PDF articles once live model access is available."
+            ),
+            provider="mock",
+            toolsUsed=[],
+        )
 
 
 async def chat_with_agent(body: AgentChatBody) -> AgentChatData:
-    if settings.mock_openai:
-        return await _run_mock_agent(body)
+    with trace_call("chat_with_agent", "Build and run the LangChain agent"):
+        if settings.mock_openai:
+            return await _run_mock_agent(body)
 
-    if settings.agent_provider.strip().lower() == "bedrock":
-        raise AppError(501, "AGENT_PROVIDER=bedrock is not implemented yet.")
+        if settings.agent_provider.strip().lower() == "bedrock":
+            raise AppError(501, "AGENT_PROVIDER=bedrock is not implemented yet.")
 
-    system_prompt, conversation, _last_user = _extract_agent_inputs(body)
-    agent = create_agent(model=_build_llm(), tools=AGENT_TOOLS, system_prompt=system_prompt)
+        system_prompt, conversation, _last_user = _extract_agent_inputs(body)
+        trace_event(f"agent input messages={len(conversation)} tools_available={len(AGENT_TOOLS)}")
+        agent = create_agent(model=_build_llm(), tools=AGENT_TOOLS, system_prompt=system_prompt)
 
-    try:
-        result = await agent.ainvoke({"messages": conversation})
-    except AppError:
-        raise
-    except Exception as exc:
-        raise AppError(502, f"Agent execution failed: {exc}") from exc
+        try:
+            with trace_call("LangChainAgent.ainvoke", "Send request to LLM and run selected tools"):
+                trace_event("LLM request sent")
+                result = await agent.ainvoke({"messages": conversation})
+                trace_event("LLM response received")
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(502, f"Agent execution failed: {exc}") from exc
 
-    result_messages = result.get("messages", [])
-    final_message = next((message for message in reversed(result_messages) if isinstance(message, AIMessage) and message.content), None)
-    if not final_message:
-        raise AppError(502, "The agent returned an empty reply.")
+        result_messages = result.get("messages", [])
+        final_message = next((message for message in reversed(result_messages) if isinstance(message, AIMessage) and message.content), None)
+        if not final_message:
+            raise AppError(502, "The agent returned an empty reply.")
 
-    tools_used: list[str] = []
-    total_prompt_tokens = 0
-    total_completion_tokens = 0
-    for message in result_messages:
-        prompt_tokens, completion_tokens = _extract_message_token_usage(message)
-        total_prompt_tokens += prompt_tokens
-        total_completion_tokens += completion_tokens
-        if isinstance(message, AIMessage):
-            for tool_call in getattr(message, "tool_calls", []):
-                tool_name = tool_call.get("name")
-                if tool_name:
-                    tools_used.append(tool_name)
+        tools_used: list[str] = []
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        for message in result_messages:
+            prompt_tokens, completion_tokens = _extract_message_token_usage(message)
+            total_prompt_tokens += prompt_tokens
+            total_completion_tokens += completion_tokens
+            if isinstance(message, AIMessage):
+                for tool_call in getattr(message, "tool_calls", []):
+                    tool_name = tool_call.get("name")
+                    if tool_name:
+                        tools_used.append(tool_name)
 
-    return AgentChatData(reply=str(final_message.content).strip(), provider="openai", toolsUsed=tools_used)
+        trace_event(f"agent output messages={len(result_messages)} tools_used={tools_used}")
+        trace_event(f"token usage: prompt={total_prompt_tokens} completion={total_completion_tokens}")
+        return AgentChatData(reply=str(final_message.content).strip(), provider="openai", toolsUsed=tools_used)

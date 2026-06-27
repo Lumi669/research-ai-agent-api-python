@@ -14,6 +14,7 @@ from openai import APIError
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.trace import result_size, trace_call, trace_event
 from app.models.agent import AgentChatBody, AgentMessage, TableData, TablePart, TextPart
 from app.models.conversations import (
     ConversationDetail,
@@ -398,82 +399,90 @@ async def _store_user_message(
     content: str | None,
     parts: list[dict[str, object]] | list[object] | None,
 ) -> tuple[AgentMessage, int]:
-    user_message_model = AgentMessage(
-        role="user",
-        content=content.strip() if content else None,
-        parts=parts,  # type: ignore[arg-type]
-    )
-    await validate_s3_message_parts(user_message_model.parts, conversation.id)
-    user_content = user_message_model.text_content
-    if not user_content:
-        raise AppError(400, "Message content is required.")
+    with trace_call("_store_user_message", "Validate and persist the user message"):
+        user_message_model = AgentMessage(
+            role="user",
+            content=content.strip() if content else None,
+            parts=parts,  # type: ignore[arg-type]
+        )
+        trace_event(f"user payload: chars={len(user_message_model.text_content)} parts={len(user_message_model.parts or [])}")
+        await validate_s3_message_parts(user_message_model.parts, conversation.id)
+        user_content = user_message_model.text_content
+        if not user_content:
+            raise AppError(400, "Message content is required.")
 
-    next_position = len(conversation.messages)
-    user_message = {
-        "pk": _conversation_pk(conversation.id),
-        "sk": _message_sk(next_position),
-        "entity_type": "message",
-        "conversation_id": conversation.id,
-        "position": next_position,
-        "role": "user",
-        "content": user_message_model.content,
-        "parts": user_message_model.model_dump(mode="json").get("parts"),
-        "created_at": _now_iso(),
-    }
-    await asyncio.to_thread(get_dynamodb_table().put_item, Item=user_message)
+        next_position = len(conversation.messages)
+        user_message = {
+            "pk": _conversation_pk(conversation.id),
+            "sk": _message_sk(next_position),
+            "entity_type": "message",
+            "conversation_id": conversation.id,
+            "position": next_position,
+            "role": "user",
+            "content": user_message_model.content,
+            "parts": user_message_model.model_dump(mode="json").get("parts"),
+            "created_at": _now_iso(),
+        }
+        await asyncio.to_thread(get_dynamodb_table().put_item, Item=user_message)
 
-    updated_title = conversation.title or user_content[:80]
-    await _update_conversation_meta(conversation.id, title=updated_title, message_count=len(conversation.messages) + 1)
-    return user_message_model, next_position
+        updated_title = conversation.title or user_content[:80]
+        await _update_conversation_meta(conversation.id, title=updated_title, message_count=len(conversation.messages) + 1)
+        return user_message_model, next_position
 
 
 async def _load_conversation_with_memory(conversation_id: str) -> tuple[ConversationDetail, ConversationMemoryState]:
-    response = await asyncio.to_thread(
-        get_dynamodb_table().query,
-        KeyConditionExpression=Key("pk").eq(_conversation_pk(conversation_id)),
-    )
-    items = response.get("Items", [])
-    if not items:
-        raise AppError(404, "Conversation not found.")
+    with trace_call("_load_conversation_with_memory", "Load conversation messages and hidden memory"):
+        response = await asyncio.to_thread(
+            get_dynamodb_table().query,
+            KeyConditionExpression=Key("pk").eq(_conversation_pk(conversation_id)),
+        )
+        items = response.get("Items", [])
+        if not items:
+            raise AppError(404, "Conversation not found.")
 
-    meta_item = next((item for item in items if item.get("sk") == CONVERSATION_META_SK), None)
-    if meta_item is None:
-        raise AppError(404, "Conversation not found.")
+        meta_item = next((item for item in items if item.get("sk") == CONVERSATION_META_SK), None)
+        if meta_item is None:
+            raise AppError(404, "Conversation not found.")
 
-    message_items = [item for item in items if str(item.get("sk", "")).startswith(MESSAGE_SK_PREFIX)]
-    return _conversation_and_memory_from_items(meta_item, message_items)
+        message_items = [item for item in items if str(item.get("sk", "")).startswith(MESSAGE_SK_PREFIX)]
+        trace_event(f"loaded messages={len(message_items)}")
+        return _conversation_and_memory_from_items(meta_item, message_items)
 
 
 async def _build_agent_messages(conversation_id: str) -> tuple[ConversationDetail, list[dict[str, str]]]:
-    conversation, memory = await _load_conversation_with_memory(conversation_id)
-    agent_messages: list[dict[str, str]] = []
-    if conversation.system_prompt:
-        agent_messages.append({"role": "system", "content": conversation.system_prompt})
-    memory_message = _build_memory_system_message(memory)
-    if memory_message:
-        agent_messages.append({"role": "system", "content": memory_message})
-    recent_messages = conversation.messages[memory.last_summarized_position :]
-    agent_messages.extend({"role": message.role, "content": message.text_content} for message in recent_messages)
-    return conversation, agent_messages
+    with trace_call("_build_agent_messages", "Prepare sanitized conversation context for the agent"):
+        conversation, memory = await _load_conversation_with_memory(conversation_id)
+        agent_messages: list[dict[str, str]] = []
+        if conversation.system_prompt:
+            agent_messages.append({"role": "system", "content": conversation.system_prompt})
+        memory_message = _build_memory_system_message(memory)
+        if memory_message:
+            agent_messages.append({"role": "system", "content": memory_message})
+        recent_messages = conversation.messages[memory.last_summarized_position :]
+        agent_messages.extend({"role": message.role, "content": message.text_content} for message in recent_messages)
+        trace_event(f"agent messages={len(agent_messages)} recent_messages={len(recent_messages)}")
+        return conversation, agent_messages
 
 
 async def _store_assistant_message(conversation: ConversationDetail, assistant_reply: str) -> None:
-    next_position = len(conversation.messages)
-    assistant_parts = _parse_assistant_parts(assistant_reply)
-    assistant_message_model = AgentMessage(role="assistant", parts=assistant_parts)
-    assistant_message = {
-        "pk": _conversation_pk(conversation.id),
-        "sk": _message_sk(next_position),
-        "entity_type": "message",
-        "conversation_id": conversation.id,
-        "position": next_position,
-        "role": "assistant",
-        "content": assistant_message_model.content,
-        "parts": assistant_message_model.model_dump(mode="json").get("parts"),
-        "created_at": _now_iso(),
-    }
-    await asyncio.to_thread(get_dynamodb_table().put_item, Item=assistant_message)
-    await _update_conversation_meta(conversation.id, title=conversation.title, message_count=len(conversation.messages) + 1)
+    with trace_call("_store_assistant_message", "Persist the assistant response"):
+        next_position = len(conversation.messages)
+        assistant_parts = _parse_assistant_parts(assistant_reply)
+        trace_event(f"assistant reply: chars={len(assistant_reply)} parts={len(assistant_parts)}")
+        assistant_message_model = AgentMessage(role="assistant", parts=assistant_parts)
+        assistant_message = {
+            "pk": _conversation_pk(conversation.id),
+            "sk": _message_sk(next_position),
+            "entity_type": "message",
+            "conversation_id": conversation.id,
+            "position": next_position,
+            "role": "assistant",
+            "content": assistant_message_model.content,
+            "parts": assistant_message_model.model_dump(mode="json").get("parts"),
+            "created_at": _now_iso(),
+        }
+        await asyncio.to_thread(get_dynamodb_table().put_item, Item=assistant_message)
+        await _update_conversation_meta(conversation.id, title=conversation.title, message_count=len(conversation.messages) + 1)
 
 
 async def _summarize_conversation_memory(
@@ -482,58 +491,64 @@ async def _summarize_conversation_memory(
     start: int,
     end: int,
 ) -> ConversationMemoryState:
-    if start >= end:
-        return memory
+    with trace_call("_summarize_conversation_memory", "Compress older conversation messages"):
+        if start >= end:
+            return memory
 
-    if settings.mock_openai:
-        return _summarize_memory_mock(memory, messages, start, end)
+        trace_event(f"memory window: start={start} end={end}")
+        if settings.mock_openai:
+            return _summarize_memory_mock(memory, messages, start, end)
 
-    client = get_openai_client()
-    try:
-        completion = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=settings.openai_model,
-            temperature=0.1,
-            max_completion_tokens=700,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _memory_system_prompt()},
-                {"role": "user", "content": _memory_user_prompt(memory, messages, start, end)},
-            ],
-        )
-    except APIError as exc:
-        raise AppError(502, f"OpenAI memory summarization failed ({exc.status_code or 'error'}): {exc.message}") from exc
+        client = get_openai_client()
+        try:
+            with trace_call("OpenAI.chat.completions.create", "Send memory summarization request to LLM"):
+                completion = await asyncio.to_thread(
+                    client.chat.completions.create,
+                    model=settings.openai_model,
+                    temperature=0.1,
+                    max_completion_tokens=700,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": _memory_system_prompt()},
+                        {"role": "user", "content": _memory_user_prompt(memory, messages, start, end)},
+                    ],
+                )
+                trace_event("LLM memory response received")
+        except APIError as exc:
+            raise AppError(502, f"OpenAI memory summarization failed ({exc.status_code or 'error'}): {exc.message}") from exc
 
-    content = completion.choices[0].message.content if completion.choices else None
-    if not content:
-        raise AppError(502, "The memory summarizer returned an empty response.")
+        content = completion.choices[0].message.content if completion.choices else None
+        if not content:
+            raise AppError(502, "The memory summarizer returned an empty response.")
 
-    return _parse_memory_response(content)
+        return _parse_memory_response(content)
 
 
 async def _refresh_conversation_memory(conversation_id: str) -> None:
-    conversation, memory = await _load_conversation_with_memory(conversation_id)
-    cutoff = max(0, len(conversation.messages) - RECENT_MESSAGE_WINDOW)
-    if cutoff <= memory.last_summarized_position:
-        if not memory.active_topic and conversation.messages:
-            inferred_topic = _infer_active_topic_from_text(conversation.messages[-1].text_content)
-            if inferred_topic:
-                memory.active_topic = inferred_topic
-                await _update_conversation_memory(conversation_id, memory)
-        return
+    with trace_call("_refresh_conversation_memory", "Update hidden conversation memory if needed"):
+        conversation, memory = await _load_conversation_with_memory(conversation_id)
+        cutoff = max(0, len(conversation.messages) - RECENT_MESSAGE_WINDOW)
+        trace_event(f"message_count={len(conversation.messages)} cutoff={cutoff}")
+        if cutoff <= memory.last_summarized_position:
+            if not memory.active_topic and conversation.messages:
+                inferred_topic = _infer_active_topic_from_text(conversation.messages[-1].text_content)
+                if inferred_topic:
+                    memory.active_topic = inferred_topic
+                    await _update_conversation_memory(conversation_id, memory)
+            return
 
-    updated_memory = await _summarize_conversation_memory(
-        memory,
-        conversation.messages,
-        memory.last_summarized_position,
-        cutoff,
-    )
-    updated_memory.last_summarized_position = cutoff
-    if not updated_memory.active_topic:
-        updated_memory.active_topic = memory.active_topic or _infer_active_topic_from_text(
-            conversation.messages[-1].text_content if conversation.messages else ""
+        updated_memory = await _summarize_conversation_memory(
+            memory,
+            conversation.messages,
+            memory.last_summarized_position,
+            cutoff,
         )
-    await _update_conversation_memory(conversation_id, updated_memory)
+        updated_memory.last_summarized_position = cutoff
+        if not updated_memory.active_topic:
+            updated_memory.active_topic = memory.active_topic or _infer_active_topic_from_text(
+                conversation.messages[-1].text_content if conversation.messages else ""
+            )
+        await _update_conversation_memory(conversation_id, updated_memory)
 
 
 async def _complete_conversation_message(
@@ -543,29 +558,33 @@ async def _complete_conversation_message(
     parts: list[dict[str, object]] | list[object] | None,
     progress: ProgressCallback | None = None,
 ) -> PostConversationMessageData:
-    initial_conversation = await get_conversation(conversation_id)
-    if progress:
-        progress("Saving user message...")
-    await _store_user_message(initial_conversation, content=content, parts=parts)
-    if progress:
-        progress("Analyzing conversation context...")
-    _conversation, agent_messages = await _build_agent_messages(conversation_id)
-    if progress:
-        # This is an application lifecycle update, not model reasoning or chain of thought.
-        progress("Generating final answer...")
-    assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
-    if progress:
-        progress("Saving assistant response...")
-    latest_conversation = await get_conversation(conversation_id)
-    await _store_assistant_message(latest_conversation, assistant.reply)
-    try:
+    with trace_call("_complete_conversation_message", "Run one full agent chat turn"):
+        initial_conversation = await get_conversation(conversation_id)
         if progress:
-            progress("Updating conversation memory...")
-        await _refresh_conversation_memory(conversation_id)
-    except Exception:
-        # Memory compression is a hidden optimization and should not fail the user-visible chat turn.
-        pass
-    return PostConversationMessageData(conversation=await get_conversation(conversation_id), assistant=assistant)
+            progress("Saving user message...")
+        await _store_user_message(initial_conversation, content=content, parts=parts)
+        if progress:
+            progress("Analyzing conversation context...")
+        _conversation, agent_messages = await _build_agent_messages(conversation_id)
+        if progress:
+            # This is an application lifecycle update, not model reasoning or chain of thought.
+            progress("Generating final answer...")
+        assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
+        trace_event(f"agent result: provider={assistant.provider} tools={len(assistant.tools_used)} reply_chars={len(assistant.reply)}")
+        if progress:
+            progress("Saving assistant response...")
+        latest_conversation = await get_conversation(conversation_id)
+        await _store_assistant_message(latest_conversation, assistant.reply)
+        try:
+            if progress:
+                progress("Updating conversation memory...")
+            await _refresh_conversation_memory(conversation_id)
+        except Exception:
+            # Memory compression is a hidden optimization and should not fail the user-visible chat turn.
+            pass
+        result = PostConversationMessageData(conversation=await get_conversation(conversation_id), assistant=assistant)
+        trace_event(f"response result: {result_size(result)}")
+        return result
 
 
 async def post_conversation_message(
@@ -573,7 +592,8 @@ async def post_conversation_message(
     content: str | None = None,
     parts: list[dict[str, object]] | list[object] | None = None,
 ) -> PostConversationMessageData:
-    return await _complete_conversation_message(conversation_id, content=content, parts=parts)
+    with trace_call("post_conversation_message", "Service entrypoint for direct chat"):
+        return await _complete_conversation_message(conversation_id, content=content, parts=parts)
 
 
 def _find_active_message_job(conversation_id: str) -> ConversationMessageJob | None:
@@ -591,67 +611,72 @@ def _record_conversation_job_progress(job: ConversationMessageJob, message: str)
 
 
 async def _run_conversation_message_job(job_id: str, conversation_id: str, body: PostConversationMessageBody) -> None:
-    job = _conversation_message_jobs.get(job_id)
-    if job is None:
-        return
+    with trace_call("_run_conversation_message_job", "Background task for async chat request"):
+        job = _conversation_message_jobs.get(job_id)
+        if job is None:
+            return
 
-    job.status = "running"
-    job.updated_at = _now_iso()
-    _record_conversation_job_progress(job, "Assistant job started...")
-    try:
-        job.result = await _complete_conversation_message(
-            conversation_id,
-            content=body.content,
-            parts=body.parts,
-            progress=lambda message: _record_conversation_job_progress(job, message),
-        )
-        job.status = "succeeded"
+        job.status = "running"
         job.updated_at = _now_iso()
-        _record_conversation_job_progress(job, "Done.")
-    except asyncio.CancelledError:
-        job.status = "canceled"
-        job.updated_at = _now_iso()
-        _record_conversation_job_progress(job, "Request canceled.")
-        raise
-    except AppError as exc:
-        job.status = "failed"
-        job.updated_at = _now_iso()
-        job.error = exc.message
-        _record_conversation_job_progress(job, "Request failed.")
-    except Exception as exc:
-        job.status = "failed"
-        job.updated_at = _now_iso()
-        job.error = str(exc)
-        _record_conversation_job_progress(job, "Request failed.")
-    finally:
-        _conversation_job_tasks.pop(job_id, None)
+        _record_conversation_job_progress(job, "Assistant job started...")
+        try:
+            job.result = await _complete_conversation_message(
+                conversation_id,
+                content=body.content,
+                parts=body.parts,
+                progress=lambda message: _record_conversation_job_progress(job, message),
+            )
+            job.status = "succeeded"
+            job.updated_at = _now_iso()
+            _record_conversation_job_progress(job, "Done.")
+        except asyncio.CancelledError:
+            job.status = "canceled"
+            job.updated_at = _now_iso()
+            _record_conversation_job_progress(job, "Request canceled.")
+            raise
+        except AppError as exc:
+            job.status = "failed"
+            job.updated_at = _now_iso()
+            job.error = exc.message
+            _record_conversation_job_progress(job, "Request failed.")
+        except Exception as exc:
+            job.status = "failed"
+            job.updated_at = _now_iso()
+            job.error = str(exc)
+            _record_conversation_job_progress(job, "Request failed.")
+        finally:
+            _conversation_job_tasks.pop(job_id, None)
 
 
 def create_conversation_message_job(conversation_id: str, body: PostConversationMessageBody) -> ConversationMessageJob:
-    active_job = _find_active_message_job(conversation_id)
-    if active_job is not None:
-        raise AppError(409, f"A message job is already in progress for this conversation: {active_job.job_id}")
+    with trace_call("create_conversation_message_job", "Create and schedule async chat job"):
+        active_job = _find_active_message_job(conversation_id)
+        if active_job is not None:
+            raise AppError(409, f"A message job is already in progress for this conversation: {active_job.job_id}")
 
-    timestamp = _now_iso()
-    job = ConversationMessageJob(
-        jobId=str(uuid4()),
-        conversationId=conversation_id,
-        status="queued",
-        createdAt=timestamp,
-        updatedAt=timestamp,
-        request=body,
-        progress=["Received request..."],
-    )
-    _conversation_message_jobs[job.job_id] = job
-    _conversation_job_tasks[job.job_id] = asyncio.create_task(_run_conversation_message_job(job.job_id, conversation_id, body))
-    return job
+        timestamp = _now_iso()
+        job = ConversationMessageJob(
+            jobId=str(uuid4()),
+            conversationId=conversation_id,
+            status="queued",
+            createdAt=timestamp,
+            updatedAt=timestamp,
+            request=body,
+            progress=["Received request..."],
+        )
+        _conversation_message_jobs[job.job_id] = job
+        _conversation_job_tasks[job.job_id] = asyncio.create_task(_run_conversation_message_job(job.job_id, conversation_id, body))
+        trace_event(f"job queued: status={job.status}")
+        return job
 
 
 def get_conversation_message_job(conversation_id: str, job_id: str) -> ConversationMessageJob:
-    job = _conversation_message_jobs.get(job_id)
-    if job is None or job.conversation_id != conversation_id:
-        raise AppError(404, f"Conversation message job not found: {job_id}")
-    return job
+    with trace_call("get_conversation_message_job", "Read async chat job status"):
+        job = _conversation_message_jobs.get(job_id)
+        if job is None or job.conversation_id != conversation_id:
+            raise AppError(404, f"Conversation message job not found: {job_id}")
+        trace_event(f"job status={job.status} progress_events={len(job.progress)}")
+        return job
 
 
 def cancel_conversation_message_job(conversation_id: str, job_id: str) -> ConversationMessageJob:
