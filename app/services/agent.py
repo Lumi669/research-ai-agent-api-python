@@ -256,7 +256,21 @@ async def search_arxiv_tool(
     with trace_call("search_arxiv_tool", "LangChain tool: search arXiv"):
         trace_event("tool=search_arxiv_tool")
         _emit_agent_progress("Current context may be limited; retrieving arXiv details...")
-        result = await search_arxiv(ArxivSearchBody(query=query_or_url, limit=limit, sortBy=sort_by, sortOrder=sort_order))
+        try:
+            result = await search_arxiv(ArxivSearchBody(query=query_or_url, limit=limit, sortBy=sort_by, sortOrder=sort_order))
+        except AppError as exc:
+            if exc.status_code not in {429, 503}:
+                raise
+            fallback = {
+                "query": query_or_url,
+                "totalResults": 0,
+                "returnedResults": 0,
+                "articles": [],
+                "limitations": ["arXiv is temporarily unavailable. Try again shortly or provide a direct PDF/arXiv URL."],
+                "error": exc.message,
+            }
+            trace_event(f"tool result: {result_size(fallback)}")
+            return fallback
         trace_event(f"tool result: {result_size(result)}")
         return result.model_dump(mode="json", by_alias=True)
 

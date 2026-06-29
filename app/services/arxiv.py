@@ -1,3 +1,4 @@
+import asyncio
 import re
 import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, unquote_plus, urlparse
@@ -10,6 +11,8 @@ from app.models.arxiv import ArxivArticle, ArxivSearchBody, ArxivSearchData
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_ABS_URL = "https://arxiv.org/abs/{arxiv_id}"
 ARXIV_MAX_LIMIT = 25
+ARXIV_RETRYABLE_STATUS_CODES = {429, 503}
+ARXIV_RETRY_DELAYS_SECONDS = (1.0, 2.0)
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "opensearch": "http://a9.com/-/spec/opensearch/1.1/"}
 
 
@@ -96,19 +99,26 @@ async def search_arxiv(body: ArxivSearchBody) -> ArxivSearchData:
     limit = min(body.limit, ARXIV_MAX_LIMIT)
     headers = {"user-agent": "ResearchAIAgentAPI/0.1 (+arxiv-search)"}
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
-        try:
-            response = await client.get(
-                ARXIV_API_URL,
-                params={
-                    "search_query": _api_query(query),
-                    "start": 0,
-                    "max_results": limit,
-                    "sortBy": body.sort_by,
-                    "sortOrder": body.sort_order,
-                },
-            )
-        except Exception as exc:
-            raise AppError(502, f"Failed to search arXiv: {exc}") from exc
+        for attempt in range(len(ARXIV_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = await client.get(
+                    ARXIV_API_URL,
+                    params={
+                        "search_query": _api_query(query),
+                        "start": 0,
+                        "max_results": limit,
+                        "sortBy": body.sort_by,
+                        "sortOrder": body.sort_order,
+                    },
+                )
+            except Exception as exc:
+                raise AppError(502, f"Failed to search arXiv: {exc}") from exc
+
+            if response.status_code not in ARXIV_RETRYABLE_STATUS_CODES:
+                break
+            if attempt >= len(ARXIV_RETRY_DELAYS_SECONDS):
+                raise AppError(response.status_code, f"arXiv is temporarily unavailable: HTTP {response.status_code}")
+            await asyncio.sleep(ARXIV_RETRY_DELAYS_SECONDS[attempt])
 
     if response.status_code >= 400:
         raise AppError(502, f"Failed to search arXiv: HTTP {response.status_code}")
