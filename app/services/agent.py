@@ -1,5 +1,7 @@
 import re
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -21,6 +23,24 @@ from app.services.cvf import search_cvf
 from app.services.papers import compare_pdf_articles, extract_paper, summarize_paper
 from app.services.pdf_reader import read_pdf_article
 from app.services.pubmed import search_pubmed
+
+AgentProgressCallback = Callable[[str], None]
+_agent_progress_callback: ContextVar[AgentProgressCallback | None] = ContextVar("agent_progress_callback", default=None)
+
+
+@contextmanager
+def agent_progress(callback: AgentProgressCallback | None):
+    token = _agent_progress_callback.set(callback)
+    try:
+        yield
+    finally:
+        _agent_progress_callback.reset(token)
+
+
+def _emit_agent_progress(message: str) -> None:
+    callback = _agent_progress_callback.get()
+    if callback:
+        callback(message)
 
 
 def _extract_requested_limit(text: str, default: int = 10) -> int:
@@ -137,6 +157,7 @@ async def read_pdf_article_tool(pdf_url: str, title: str | None = None, max_char
 
     with trace_call("read_pdf_article_tool", "LangChain tool: read PDF article"):
         trace_event("tool=read_pdf_article_tool")
+        _emit_agent_progress("Reading document for more detail...")
         result = await read_pdf_article(pdf_url=pdf_url, title=title, max_chars=max_chars)
         trace_event(f"tool result: {result_size(result)}")
         return result.model_dump(mode="json", by_alias=True)
@@ -196,10 +217,11 @@ async def analyze_conference_tool(
 
 @tool
 async def search_pubmed_tool(query_or_url: str, limit: int = 10, sort: str = "relevance") -> dict[str, Any]:
-    """Search PubMed or read a PubMed search URL, returning article metadata and abstracts for comparison or summary."""
+    """Search PubMed or read a PubMed search URL, returning article metadata and abstracts. For follow-up comparisons of papers already listed, use conversation context if enough; if not enough, call this tool to retrieve more detail before comparing."""
 
     with trace_call("search_pubmed_tool", "LangChain tool: search PubMed"):
         trace_event("tool=search_pubmed_tool")
+        _emit_agent_progress("Current context may be limited; retrieving PubMed details...")
         try:
             result = await search_pubmed(PubMedSearchBody(query=query_or_url, limit=limit, sort=sort))
         except AppError as exc:
@@ -233,6 +255,7 @@ async def search_arxiv_tool(
 
     with trace_call("search_arxiv_tool", "LangChain tool: search arXiv"):
         trace_event("tool=search_arxiv_tool")
+        _emit_agent_progress("Current context may be limited; retrieving arXiv details...")
         result = await search_arxiv(ArxivSearchBody(query=query_or_url, limit=limit, sortBy=sort_by, sortOrder=sort_order))
         trace_event(f"tool result: {result_size(result)}")
         return result.model_dump(mode="json", by_alias=True)
@@ -244,6 +267,7 @@ async def search_cvf_tool(source_url: str, query: str | None = None, limit: int 
 
     with trace_call("search_cvf_tool", "LangChain tool: search CVF/CVPR"):
         trace_event("tool=search_cvf_tool")
+        _emit_agent_progress("Current context may be limited; retrieving CVF details...")
         result = await search_cvf(CVFSearchBody(sourceUrl=source_url, query=query, limit=limit))
         trace_event(f"tool result: {result_size(result)}")
         return result.model_dump(mode="json", by_alias=True)

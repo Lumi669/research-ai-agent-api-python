@@ -192,6 +192,8 @@ async def search_pubmed(body: PubMedSearchBody) -> PubMedSearchData:
             raise AppError(502, f"Failed to fetch PubMed records: {exc}") from exc
 
         if fetch_response.status_code >= 400:
+            if fetch_response.status_code == 429:
+                raise AppError(429, "PubMed is rate limiting record fetch requests. Please wait a moment and try again.")
             raise AppError(502, f"Failed to fetch PubMed records: HTTP {fetch_response.status_code}")
 
     articles = _parse_pubmed_articles(fetch_response.text)

@@ -25,7 +25,7 @@ from app.models.conversations import (
     PostConversationMessageData,
     UpdateConversationBody,
 )
-from app.services.agent import chat_with_agent
+from app.services.agent import agent_progress, chat_with_agent
 from app.services.dynamodb import get_dynamodb_table
 from app.services.openai_client import get_openai_client
 from app.services.s3 import delete_conversation_prefix, delete_s3_objects, extract_s3_objects, validate_s3_message_parts
@@ -569,7 +569,8 @@ async def _complete_conversation_message(
         if progress:
             # This is an application lifecycle update, not model reasoning or chain of thought.
             progress("Generating final answer...")
-        assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
+        with agent_progress(progress):
+            assistant = await chat_with_agent(AgentChatBody(messages=agent_messages))
         trace_event(f"agent result: provider={assistant.provider} tools={len(assistant.tools_used)} reply_chars={len(assistant.reply)}")
         if progress:
             progress("Saving assistant response...")
