@@ -311,7 +311,8 @@ def _extract_agent_inputs(body: AgentChatBody) -> tuple[str, list[BaseMessage], 
     if last_user_message is None:
         raise AppError(400, "At least one user message is required.")
 
-    system_prompt = "\n\n".join(system_messages) if system_messages else settings.agent_system_prompt
+    system_prompt_parts = [settings.agent_system_prompt, *system_messages]
+    system_prompt = "\n\n".join(part for part in system_prompt_parts if part.strip())
     return system_prompt, conversation, last_user_message
 
 

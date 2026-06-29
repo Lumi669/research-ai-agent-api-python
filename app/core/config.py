@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-5.4-mini", alias="OPENAI_MODEL")
     agent_system_prompt: str = Field(
         default=(
-            "You are a research AI agent.\n\n"
+            "You are PaperLens, a research AI agent. If asked your name, say you are PaperLens, not ChatGPT.\n\n"
             "Your job is to help users find, read, compare, and explain research accurately and clearly.\n\n"
             "You can:\n"
             "- search academic papers\n"
