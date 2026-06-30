@@ -6,8 +6,8 @@ This repo is in a good hybrid state already: it has real agent-style chat plus w
 
 ### 1. Confirm frontend rendering contract
 
-- Make sure the Next.js frontend always renders `message.parts` first, not only `message.content`.
-- Support these part types consistently:
+- ✅ Make sure the Next.js frontend always renders `message.parts` first, not only `message.content`.
+- ✅ Support these part types consistently:
   - `text`
   - `table`
   - `image`
@@ -16,7 +16,7 @@ This repo is in a good hybrid state already: it has real agent-style chat plus w
 
 ### 2. Improve agent output structure
 
-- Add stronger prompt rules so research comparison outputs are returned in structured sections.
+- ✅ Add stronger prompt rules so research comparison outputs are returned in structured sections.
 - Prefer returning `table` parts for comparison-style answers when possible.
 - Decide which outputs should be:
   - plain conversational text
@@ -25,14 +25,14 @@ This repo is in a good hybrid state already: it has real agent-style chat plus w
 
 ### 3. Add better observability
 
-- Expose active provider/mode clearly in logs and health checks.
-- Add request-level logging for:
+- ✅ Expose active provider/mode clearly in logs and health checks.
+- ✅ Add request-level logging for:
   - conversation id
   - job id
   - provider
   - model
   - tool usage
-- Add clearer error messages for OpenAI/tool failures.
+- ✅ Add clearer error messages for OpenAI/tool failures.
 
 ## Priority 2
 
@@ -45,7 +45,7 @@ This repo is in a good hybrid state already: it has real agent-style chat plus w
 
 ### 5. Make cancellation more robust
 
-- Current cancellation is real at the app level, but provider interruption is still best-effort.
+- ✅ Current cancellation is real at the app level, but provider interruption is still best-effort.
 - Review long-running tool calls and add cancellation checks where practical.
 - Document which operations are:
   - immediately cancelable
@@ -115,4 +115,3 @@ This will likely be more reliable than letting the generic agent do everything t
 - Use workflows for repeatable tasks like summarize/extract/compare.
 - Use the agent for flexible research chat and tool selection.
 - Use RAG when document count and context size start to grow.
-
